@@ -6,7 +6,7 @@ GitHub repository-ready package for SillyTavern. This is based on Dynamic Relati
 
 1. Publish these repository files to a GitHub repository (the files in this package must be at repository root).
 2. In SillyTavern, open Extensions and choose Install extension.
-3. Paste your repository URL, for example `https://github.com/YOUR-USERNAME/DynamicRelationships-Inventory`.
+3. Paste your repository URL, for example `https://github.com/casazabot-sudo/DynamicRelationships-Inventory`.
 4. Install, then reload SillyTavern.
 5. Disable/remove the separate Inventory System extension to avoid duplicate handlers.
 6. First test with Inventory module turned off; then enable it and test.
