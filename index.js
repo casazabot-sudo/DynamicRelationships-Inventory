@@ -10,7 +10,7 @@
     const LEGACY_KEY = 'dynamic_relationships_v1';
     const ROOT_ID = 'dynamic-relationships-extension';
     const MACRO_NAME = 'dr_relationships';
-    const VERSION = '0.8.9';
+    const VERSION = '0.8.11';
     const METRICS = ['trust', 'affection', 'respect', 'attachment', 'attraction', 'fear', 'jealousy', 'irritation', 'admiration'];
     const LABELS = {
         trust: 'Доверие', affection: 'Симпатия', respect: 'Уважение',
@@ -32,7 +32,9 @@
         stripHistoryBlocks: true,
         keepLastBlocks: 2,
         includeNeutralRelations: false,
-        debug: false
+        debug: false,
+        inventoryEnabled: true,
+        excludeNarratorInventory: true
     };
 
     const SCENE_PROMPT_KEY = 'dynamic_relationships_scene';
@@ -107,6 +109,10 @@
         state.sceneByMessageIndex ??= {};
         state.charactersByMessageIndex ??= {};
         state.thoughtsByMessageIndex ??= {};
+        state.inventory ??= { items: {}, journal: [], processedMessages: [] };
+        state.inventory.items ??= {};
+        state.inventory.journal ??= [];
+        state.inventory.processedMessages ??= [];
 
         if (!state.schemaVersion || state.schemaVersion < 3) {
             for (const rel of Object.values(state.relationships)) {
@@ -180,13 +186,6 @@
             silentSaveState();
         }, 400);
     }
-
-    // Shared bridge for the optional integrated Inventory module. It reuses the same per-chat entity registry.
-    window.DynamicRelationshipsInventoryBridge = {
-        getState, saveState, settings, getContext, renderPanel,
-        ensureEntity, findEntity, idFor, norm,
-        getActiveNames
-    };
 
     function cleanName(value) {
         return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
@@ -467,7 +466,12 @@
         const scene = getCurrentScene() || state.scene || {};
         const fmt = (v) => (v && String(v).trim()) ? String(v).trim() : 'неизвестно';
         
-        let prompt = `[System Note: ОБЯЗАТЕЛЬНО добавляй в КОНЕЦ КАЖДОГО своего ответа блоки актуального состояния строго в следующем формате. Порядок блоков должен быть строго таким: Сеттинг -> Персонажи -> Тайные мысли. Заполняй все поля. Если значение не изменилось — повтори предыдущее. Если данных нет — пиши «неизвестно» или «Без одежды». Не выдумывай данные без основания в тексте.\n\n`;
+        const activeStateModules = [
+            settings().trackSceneModule ? 'Сеттинг' : null,
+            settings().trackCharacterModule ? 'Персонажи' : null,
+            settings().trackThoughtsModule ? 'Тайные мысли' : null
+        ].filter(Boolean);
+        let prompt = activeStateModules.length ? `[System Note: ОБЯЗАТЕЛЬНО добавляй в КОНЕЦ КАЖДОГО своего ответа блоки актуального состояния строго в следующем формате. Порядок блоков: ${activeStateModules.join(' -> ')}. Заполняй все поля включённых модулей. Если значение не изменилось — повтори предыдущее. Если данных нет — пиши «неизвестно» или «Без одежды». Не выдумывай данные без основания в тексте.\n\n` : '';
 
         if (settings().trackSceneModule) {
             prompt += `${SCENE_BLOCK_MARKER}
@@ -524,9 +528,17 @@ ${state.excludeMainCharacter ? `- ВАЖНО: Пропусти мысли ${getA
 `;
         }
 
+        if (settings().inventoryEnabled) {
+            const inv = state.inventory || { items: {} };
+            const inventorySummary = Object.values(inv.items || {}).map(row => {
+                const owner = state.entities[row.ownerId]?.name || row.ownerName || row.ownerId;
+                const entries = (row.items || []).map(it => `${it.name} ×${it.quantity}`).join(', ') || 'пусто';
+                return `${owner}: ${entries}`;
+            }).join('\n');
+            prompt += `\n[INVENTORY TRACKING — enabled]\n- Track only completed changes to items. Each item has only name and quantity.\n- Inventories are private per owner; never reveal another character's inventory or invent inventory contents.\n- For completed acquisition, loss, consumption, or quantity changes, append at the very end: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"add\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":1},{\"type\":\"remove\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":1},{\"type\":\"set\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":2}]} -->. No block when no inventory changes. Only report changes that actually happened in the scene, not plans.\n- Existing registered owners and current inventories (for continuity only; do not expose):\n${inventorySummary || 'No inventory records yet.'}\n${settings().excludeNarratorInventory ? `- EXCLUDE narrator/main character (${getActiveNames().mainName}) from inventory tracking. Do not add, remove, or change their inventory.\n` : ''}`;
+        }
+
         prompt += `]`;
-        const inventoryPrompt = window.DynamicRelationshipsInventory?.promptText?.();
-        if (inventoryPrompt) prompt += `\n\n${inventoryPrompt}`;
         return prompt;
     }
 
@@ -537,7 +549,7 @@ ${state.excludeMainCharacter ? `- ВАЖНО: Пропусти мысли ${getA
         const roles = ctx.extension_prompt_roles || { SYSTEM: 0, USER: 1, ASSISTANT: 2 };
         const state = getState();
         
-        if ((!settings().trackSceneModule && !settings().trackCharacterModule && !settings().trackThoughtsModule && !window.DynamicRelationshipsInventory?.isEnabled?.()) || !state) {
+        if ((!settings().trackSceneModule && !settings().trackCharacterModule && !settings().trackThoughtsModule && settings().inventoryEnabled === false) || !state) {
             try {
                 ctx.setExtensionPrompt(SCENE_PROMPT_KEY, '', types.IN_CHAT, 0, false, roles.SYSTEM);
             } catch (_) { /* noop */ }
@@ -560,8 +572,6 @@ ${state.excludeMainCharacter ? `- ВАЖНО: Пропусти мысли ${getA
         if (!html) return html;
         const box = document.createElement('div');
         box.innerHTML = String(html);
-        // State sections are expected at the end. Remove from the first marker onward,
-        // even if Markdown nests the marker inside a paragraph or span.
         const markers = ['ТЕКУЩИЙ СЕТТИНГ', 'ЗАМЕЧАН ПЕРСОНАЖ', 'ТАЙНЫЕ МЫСЛИ'];
         const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
         let textNode, markerOffset = -1;
@@ -1058,12 +1068,17 @@ ${body}
                 () => chars ? characterFooterMarkup(chars) : '',
                 () => thoughts ? thoughtFooterMarkup(thoughts) : '',
             ];
-            // Prevent duplicate footer rendering when the messageFormatter hook already ran.
-            const existing = textEl.querySelector('.dr-scene-footer, .dr-char-footer, .dr-thought-footer');
-            if (existing) return;
             const htmlToAdd = footerOrder.map(render => render()).join('');
             if (htmlToAdd) textEl.insertAdjacentHTML('beforeend', htmlToAdd);
         });
+    }
+
+    function stripInventoryActionFromHtml(html) {
+        if (!settings().inventoryEnabled || !html) return html;
+        return String(html)
+            .replace(/<!--\s*INVENTORY_ACTIONS\s*[\s\S]*?-->/gi, '')
+            .replace(/&lt;!--\s*INVENTORY_ACTIONS\s*[\s\S]*?--&gt;/gi, '')
+            .replace(/&lt;!--\s*INVENTORY_ACTIONS\s*[\s\S]*?--\s*&gt;/gi, '');
     }
 
     function registerMessageFormatter() {
@@ -1097,26 +1112,24 @@ ${body}
                     if (thoughts) shouldProcess = true;
                 }
                 
-                if (!shouldProcess) return html;
+                if (!shouldProcess) return stripInventoryActionFromHtml(html);
                 
                 try { syncBlocksToState(messageId, scene, chars, thoughts); } catch (err) { console.warn(`[${MODULE}] scene sync failed`, err); }
                 
                 let stripped = stripBlocksFromHtml(html);
-                // Remove pre-existing DR footer nodes to make the formatter idempotent.
                 const cleaned = document.createElement('div');
                 cleaned.innerHTML = stripped;
                 cleaned.querySelectorAll('.dr-scene-footer, .dr-char-footer, .dr-thought-footer').forEach(el => el.remove());
                 stripped = cleaned.innerHTML;
-                // State-only replies must not become visually blank after state blocks are removed.
                 if (!cleaned.textContent.trim()) stripped = '<div class="dr-state-only-placeholder">Состояние сцены обновлено.</div>';
-                // Fixed footer order: setting -> noticed characters -> thoughts.
+                // Fixed footer order: current setting -> noticed characters -> secret thoughts.
                 const footerOrder = [
                     () => scene ? sceneFooterMarkup(scene) : '',
                     () => chars ? characterFooterMarkup(chars) : '',
                     () => thoughts ? thoughtFooterMarkup(thoughts) : '',
                 ];
                 const footers = footerOrder.map(render => render()).join('');
-                return stripped + footers;
+                return stripInventoryActionFromHtml(stripped + footers);
             }, { stage: formatter.stage?.AFTER_MARKDOWN, order: formatter.order?.LATEST });
             registerMessageFormatter.done = true;
         } catch (err) { console.warn(`[${MODULE}] Message formatter registration failed`, err); }
@@ -1221,6 +1234,38 @@ ${body}
         });
         thoughtLabel.append(thoughtInput, thoughtText);
 
+        const inventoryLabel = document.createElement('label');
+        inventoryLabel.className = 'dr-setting';
+        const inventoryInput = document.createElement('input');
+        inventoryInput.type = 'checkbox';
+        inventoryInput.checked = settings().inventoryEnabled !== false;
+        const inventoryText = document.createElement('span');
+        inventoryText.textContent = 'Включить инвентарь';
+        inventoryInput.addEventListener('change', () => {
+            settings().inventoryEnabled = inventoryInput.checked;
+            const ctx = getContext();
+            if (typeof ctx?.saveSettingsDebounced === 'function') ctx.saveSettingsDebounced();
+            updateSystemInjection();
+            renderPanel();
+        });
+        inventoryLabel.append(inventoryInput, inventoryText);
+
+        const narratorInventoryLabel = document.createElement('label');
+        narratorInventoryLabel.className = 'dr-setting';
+        const narratorInventoryInput = document.createElement('input');
+        narratorInventoryInput.type = 'checkbox';
+        narratorInventoryInput.checked = settings().excludeNarratorInventory !== false;
+        const narratorInventoryText = document.createElement('span');
+        narratorInventoryText.textContent = 'Не отслеживать инвентарь {{char}}, если он рассказчик';
+        narratorInventoryInput.addEventListener('change', () => {
+            settings().excludeNarratorInventory = narratorInventoryInput.checked;
+            const ctx = getContext();
+            if (typeof ctx?.saveSettingsDebounced === 'function') ctx.saveSettingsDebounced();
+            updateSystemInjection();
+            renderPanel();
+        });
+        narratorInventoryLabel.append(narratorInventoryInput, narratorInventoryText);
+
         const stripLabel = document.createElement('label');
         stripLabel.className = 'dr-setting';
         const stripInput = document.createElement('input');
@@ -1324,7 +1369,7 @@ ${body}
             updateStorageControls();
         });
 
-        configBox.append(excludeLabel, sceneLabel, charLabel, thoughtLabel, stripLabel, keepLabel, storageLabel, storageNote, loreLabel, refreshBooks);
+        configBox.append(excludeLabel, sceneLabel, charLabel, thoughtLabel, inventoryLabel, narratorInventoryLabel, stripLabel, keepLabel, storageLabel, storageNote, loreLabel, refreshBooks);
         content.append(configBox);
         populateLorebookSelect(loreSelect, state.targetLorebook).then(updateStorageControls);
 
@@ -1404,11 +1449,207 @@ ${body}
             journalBox.append(p);
         }
         content.append(journalBox);
-
-        // Integrated Inventory module is rendered as a nested section of Dynamic Relationships.
-        if (window.DynamicRelationshipsInventory?.render) window.DynamicRelationshipsInventory.render(content, state);
+        renderInventoryModule(content, state);
 
         root.querySelector('.dr-count').textContent = `${Object.keys(state.entities).length} участников`;
+    }
+
+    // ---------------------------------------------------------------------
+    // Inventory module: minimal per-entity item/quantity tracking + audit log
+    // ---------------------------------------------------------------------
+    function inventoryState(state) {
+        state.inventory ??= { items: {}, journal: [], processedMessages: [] };
+        state.inventory.items ??= {};
+        state.inventory.journal ??= [];
+        state.inventory.processedMessages ??= [];
+        return state.inventory;
+    }
+
+    function inventoryOwnerList(state) {
+        const names = getActiveNames();
+        const userId = idFor(names.userName) || 'user';
+        const mainId = idFor(names.mainName);
+        const owners = [{ id: userId, name: names.userName || 'User', type: 'user' }];
+        for (const entity of Object.values(state.entities || {})) {
+            if (!entity?.name) continue;
+            if (settings().excludeNarratorInventory && norm(entity.name) === norm(names.mainName)) continue;
+            if (owners.some(o => o.id === entity.id || norm(o.name) === norm(entity.name))) continue;
+            owners.push({ id: entity.id || idFor(entity.name), name: entity.name, type: entity.type || 'npc' });
+        }
+        if (!settings().excludeNarratorInventory && !owners.some(o => o.id === mainId)) owners.push({ id: mainId, name: names.mainName, type: 'main_character' });
+        return owners;
+    }
+
+    function inventoryLog(state, action, ownerId, itemName, quantity, source, details = {}) {
+        const inv = inventoryState(state);
+        const ownerName = state.entities[ownerId]?.name || inventoryOwnerList(state).find(o => o.id === ownerId)?.name || ownerId;
+        inv.journal.push({ id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: new Date().toISOString(), source, action, ownerId, ownerName, itemName, quantity, details });
+        if (inv.journal.length > 500) inv.journal.splice(0, inv.journal.length - 500);
+    }
+
+    function ensureInventoryOwner(state, name) {
+        const clean = cleanName(name);
+        if (!clean) return null;
+        const active = getActiveNames();
+        if (norm(clean) === norm(active.userName)) return { id: idFor(active.userName), name: active.userName, type: 'user' };
+        const entity = findEntity(state, clean);
+        if (settings().excludeNarratorInventory && (norm(clean) === norm(active.mainName) || norm(entity?.name) === norm(active.mainName))) return null;
+        if (entity) return { id: entity.id, name: entity.name, type: entity.type };
+        // Unknown AI owners are deliberately not registered: DR remains the single character registry.
+        return null;
+    }
+
+    function inventoryApply(state, action, source = 'AI') {
+        const inv = inventoryState(state);
+        const owner = ensureInventoryOwner(state, action.owner || action.character || '');
+        if (!owner) return { status: 'skipped', reason: `Unknown owner or narrator excluded: ${action.owner || action.character || ''}` };
+        const itemName = cleanName(action.item || action.name);
+        const rawQuantity = Number(action.quantity);
+        const qty = Number.isFinite(rawQuantity) ? Math.max(0, Math.floor(rawQuantity)) : 0;
+        const type = String(action.type || '').toLowerCase();
+        if (!itemName) return { status: 'error', reason: 'Missing item name' };
+        if ((type === 'add' || type === 'remove' || type === 'consume') && qty < 1) return { status: 'error', reason: 'Quantity must be a positive integer' };
+        const ownerRow = inv.items[owner.id] ??= { ownerId: owner.id, ownerName: owner.name, items: [] };
+        const existing = ownerRow.items.find(i => norm(i.name) === norm(itemName));
+        const before = existing ? Number(existing.quantity) || 0 : 0;
+        if (type === 'add') {
+            if (existing) existing.quantity = before + qty;
+            else ownerRow.items.push({ name: itemName, quantity: qty });
+            inventoryLog(state, 'add', owner.id, itemName, qty, source, { before, after: before + qty });
+            return { status: 'success', owner: owner.name, item: itemName, before, after: before + qty };
+        }
+        if (type === 'remove' || type === 'consume') {
+            if (!existing || before < qty) return { status: 'error', reason: `Not enough ${itemName} in ${owner.name}'s inventory (have ${before}, requested ${qty})` };
+            existing.quantity = before - qty;
+            if (existing.quantity <= 0) ownerRow.items = ownerRow.items.filter(i => i !== existing);
+            inventoryLog(state, 'remove', owner.id, itemName, qty, source, { before, after: before - qty });
+            return { status: 'success', owner: owner.name, item: itemName, before, after: before - qty };
+        }
+        if (type === 'set') {
+            if (existing && qty === 0) ownerRow.items = ownerRow.items.filter(i => i !== existing);
+            else if (existing) existing.quantity = qty;
+            else if (qty > 0) ownerRow.items.push({ name: itemName, quantity: qty });
+            inventoryLog(state, 'set', owner.id, itemName, qty, source, { before, after: qty });
+            return { status: 'success', owner: owner.name, item: itemName, before, after: qty };
+        }
+        return { status: 'error', reason: `Unsupported inventory action: ${type}` };
+    }
+
+    async function inventoryManualAction(action, ownerId, itemName, qty) {
+        const state = getState();
+        if (!state) return;
+        const inv = inventoryState(state);
+        const owner = inventoryOwnerList(state).find(o => o.id === ownerId);
+        if (!owner) return toast('Не найден владелец инвентаря.', 'warning');
+        const clean = cleanName(itemName);
+        if (!clean) return toast('Введите название предмета.', 'warning');
+        const n = Math.max(0, Math.floor(Number(qty) || 0));
+        const row = inv.items[owner.id] ??= { ownerId: owner.id, ownerName: owner.name, items: [] };
+        const item = row.items.find(i => norm(i.name) === norm(clean));
+        const before = item ? Number(item.quantity) || 0 : 0;
+        if (action === 'add') {
+            if (n < 1) return toast('Количество должно быть больше нуля.', 'warning');
+            if (item) item.quantity = before + n; else row.items.push({ name: clean, quantity: n });
+            inventoryLog(state, 'add', owner.id, clean, n, 'manual', { before, after: before + n });
+        } else if (action === 'set') {
+            if (n < 0) return toast('Количество не может быть отрицательным.', 'warning');
+            if (item && n === 0) row.items = row.items.filter(i => i !== item);
+            else if (item) item.quantity = n; else if (n > 0) row.items.push({ name: clean, quantity: n });
+            inventoryLog(state, 'set', owner.id, clean, n, 'manual', { before, after: n });
+        } else if (action === 'delete') {
+            if (!item) return toast('Предмет не найден.', 'warning');
+            row.items = row.items.filter(i => i !== item);
+            inventoryLog(state, 'remove', owner.id, clean, before, 'manual', { before, after: 0 });
+        }
+        await saveState(false);
+        renderPanel();
+    }
+
+    function renderInventoryModule(content, state) {
+        const box = document.createElement('details');
+        box.className = 'dr-collapsible dr-inventory';
+        box.open = true;
+        const inv = inventoryState(state);
+        const owners = inventoryOwnerList(state);
+        const summary = document.createElement('summary');
+        summary.textContent = `Инвентари (${Object.values(inv.items).reduce((sum, r) => sum + (r.items || []).length, 0)} предметов)`;
+        box.append(summary);
+        if (settings().inventoryEnabled === false) {
+            const disabled = document.createElement('p'); disabled.className = 'dr-muted'; disabled.textContent = 'Инвентарь отключён в настройках. Данные сохранены.'; box.append(disabled); content.append(box); return;
+        }
+        const form = document.createElement('div'); form.className = 'dr-inventory-form';
+        const ownerSelect = document.createElement('select'); ownerSelect.className = 'dr-lorebook-select';
+        owners.forEach(o => { const opt = document.createElement('option'); opt.value = o.id; opt.textContent = `${o.name} (${o.type})`; ownerSelect.append(opt); });
+        const nameInput = document.createElement('input'); nameInput.placeholder = 'Название предмета'; nameInput.className = 'dr-inventory-input';
+        const qtyInput = document.createElement('input'); qtyInput.type = 'number'; qtyInput.min = '1'; qtyInput.step = '1'; qtyInput.value = '1'; qtyInput.className = 'dr-inventory-input dr-qty';
+        const addButton = document.createElement('button'); addButton.textContent = 'Добавить предмет'; addButton.addEventListener('click', () => inventoryManualAction('add', ownerSelect.value, nameInput.value, qtyInput.value));
+        form.append(ownerSelect, nameInput, qtyInput, addButton); box.append(form);
+        for (const owner of owners) {
+            const ownerRow = inv.items[owner.id];
+            const card = document.createElement('section'); card.className = 'dr-inventory-owner';
+            const title = document.createElement('strong'); title.textContent = `${owner.name} — ${owner.type}`; card.append(title);
+            const list = document.createElement('ul'); list.className = 'dr-inventory-list';
+            const items = ownerRow?.items || [];
+            if (!items.length) { const empty = document.createElement('li'); empty.className = 'dr-muted'; empty.textContent = 'Инвентарь пуст'; list.append(empty); }
+            for (const item of items) {
+                const li = document.createElement('li'); li.className = 'dr-inventory-item';
+                const label = document.createElement('span'); label.textContent = item.name;
+                const q = document.createElement('input'); q.type = 'number'; q.min = '0'; q.step = '1'; q.value = String(item.quantity); q.className = 'dr-inventory-input dr-qty';
+                const save = document.createElement('button'); save.textContent = 'Сохранить'; save.addEventListener('click', () => inventoryManualAction('set', owner.id, item.name, q.value));
+                const del = document.createElement('button'); del.textContent = 'Удалить'; del.addEventListener('click', () => inventoryManualAction('delete', owner.id, item.name, item.quantity));
+                li.append(label, q, save, del); list.append(li);
+            }
+            card.append(list); box.append(card);
+        }
+        const logBox = document.createElement('details'); logBox.className = 'dr-inventory-log';
+        const logSummary = document.createElement('summary'); logSummary.textContent = `Журнал инвентаря (${inv.journal.length})`; logBox.append(logSummary);
+        const logList = document.createElement('ul'); logList.className = 'dr-inventory-list';
+        for (const entry of inv.journal.slice(-100).reverse()) {
+            const li = document.createElement('li');
+            const d = entry.details || {};
+            if (entry.action === 'no_ai_action' || entry.action === 'ai_action_error') {
+                li.textContent = `${new Date(entry.timestamp).toLocaleString()} · ИИ · ${d.message || (entry.action === 'no_ai_action' ? 'Действий с инвентарём не было.' : 'Ошибка обработки действия.')}`;
+            } else {
+                const actionText = entry.action === 'add' ? 'добавлено' : entry.action === 'remove' ? 'удалено' : 'количество изменено';
+                const deltaText = entry.action === 'set' ? `${d.before ?? '?'} → ${d.after ?? entry.quantity}` : `${entry.quantity}`;
+                li.textContent = `${new Date(entry.timestamp).toLocaleString()} · ${entry.source === 'AI' ? 'ИИ' : 'Вручную'} · ${entry.ownerName}: ${actionText} ${entry.itemName} (${deltaText})`;
+            }
+            logList.append(li);
+        }
+        if (!inv.journal.length) { const li = document.createElement('li'); li.className = 'dr-muted'; li.textContent = 'Записей пока нет.'; logList.append(li); }
+        logBox.append(logList); box.append(logBox); content.append(box);
+    }
+
+    async function processInventoryMessage(messageArg) {
+        if (settings().inventoryEnabled === false) return;
+        const state = getState(); if (!state) return;
+        const ctx = getContext(); const chat = ctx?.chat || [];
+        const supplied = messageArg && typeof messageArg === 'object' ? (messageArg.message || messageArg.mes || messageArg) : null;
+        let candidate = supplied && !supplied.is_user && supplied.role !== 'user' ? supplied : null;
+        if (!candidate) candidate = [...chat].reverse().find(m => m && !m.is_user && m.role !== 'user' && (m.mes || m.message || m.content));
+        if (!candidate) return;
+        const text = String(candidate.mes || candidate.message || candidate.content || '');
+        const key = String(candidate.mesId || candidate.id || candidate.send_date || `${chat.indexOf(candidate)}_${hash(text.slice(0,160))}`);
+        const inv = inventoryState(state);
+        if (inv.processedMessages.includes(key)) return;
+        inv.processedMessages.push(key); if (inv.processedMessages.length > 200) inv.processedMessages.splice(0, inv.processedMessages.length - 200);
+        const match = text.match(/<!--\s*INVENTORY_ACTIONS\s*([\s\S]*?)\s*-->/i);
+        if (!match) {
+            inventoryLog(state, 'no_ai_action', '', '', 0, 'AI', { message: 'Ответ ИИ: блок INVENTORY_ACTIONS не найден.' });
+            await saveState(false); renderPanel(); return;
+        }
+        try {
+            const parsed = JSON.parse(match[1].trim());
+            const actions = Array.isArray(parsed.actions) ? parsed.actions.slice(0, 20) : [];
+            if (!actions.length) inventoryLog(state, 'no_ai_action', '', '', 0, 'AI', { message: 'ИИ вернул пустой список действий.' });
+            for (const action of actions) {
+                const result = inventoryApply(state, action, 'AI');
+                if (result.status !== 'success') inventoryLog(state, 'ai_action_error', action.owner || '', action.item || '', action.quantity || 0, 'AI', { message: result.reason || result.status });
+            }
+        } catch (e) {
+            inventoryLog(state, 'ai_action_error', '', '', 0, 'AI', { message: `Ошибка разбора блока: ${e.message}` });
+        }
+        await saveState(false); renderPanel();
     }
 
     async function undoLast() {
@@ -1505,7 +1746,7 @@ ${body}
         
         if (ev.APP_READY) es.on(ev.APP_READY, () => { mountPanel(); registerMacro(); registerMessageFormatter(); updateSystemInjection(); renderPanel(); });
         if (ev.CHARACTER_MESSAGE_RENDERED) es.on(ev.CHARACTER_MESSAGE_RENDERED, () => { updateSystemInjection(); });
-        if (ev.MESSAGE_RECEIVED) es.on(ev.MESSAGE_RECEIVED, () => { updateSystemInjection(); scheduleAnalyze(); });
+        if (ev.MESSAGE_RECEIVED) es.on(ev.MESSAGE_RECEIVED, (...args) => { updateSystemInjection(); scheduleAnalyze(); processInventoryMessage(args[0]); });
         if (ev.CHAT_CHANGED) es.on(ev.CHAT_CHANGED, () => {
             busy = false;
             restoreHistoryAfterGeneration();
@@ -1551,194 +1792,4 @@ ${body}
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
     else init();
-
-    // ---------------------------------------------------------------------
-    // Optional Inventory module (nested UI, shared Dynamic Relationships entity registry)
-    // ---------------------------------------------------------------------
-    (() => {
-        const INV_DB = 'SillyTavern_InventorySystem';
-        const INV_VERSION = 4;
-        const INV_SETTINGS_KEY = 'dynamic_relationships_inventory';
-        let invDbPromise = null;
-        let invRoot = null;
-        let invBusy = false;
-        const invDefaults = { enabled: false, autoApply: true };
-        const invSettings = () => {
-            const ctx = getContext();
-            if (!ctx?.extensionSettings) return invDefaults;
-            ctx.extensionSettings[INV_SETTINGS_KEY] ??= {...invDefaults};
-            for (const [k,v] of Object.entries(invDefaults)) if (!(k in ctx.extensionSettings[INV_SETTINGS_KEY])) ctx.extensionSettings[INV_SETTINGS_KEY][k]=v;
-            return ctx.extensionSettings[INV_SETTINGS_KEY];
-        };
-        const invSaveSettings = () => getContext()?.saveSettingsDebounced?.();
-        const invKey = () => {
-            const c=getContext(); const f=c?.chat?.file_name||c?.chatId||c?.chat?.name||c?.chat?.id;
-            const ch=c?.name2||c?.character?.name||'character'; return f?`${ch}::${f}`:null;
-        };
-        const invUid = p => `${p}_${crypto.randomUUID?crypto.randomUUID():Date.now()+'_'+Math.random().toString(36).slice(2)}`;
-        const invEscape = v => String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-        function invOpenDb(){ if(invDbPromise)return invDbPromise; invDbPromise=new Promise((resolve,reject)=>{const r=indexedDB.open(INV_DB,INV_VERSION);r.onupgradeneeded=()=>{const db=r.result,tx=r.transaction;const defs={chats:'chatKey',entities:['chatKey','entityId'],storages:['chatKey','storageId'],items:['chatKey','itemId'],events:['chatKey','eventId'],processed:['chatKey','messageKey']};for(const [n,k] of Object.entries(defs)){const st=db.objectStoreNames.contains(n)?tx.objectStore(n):db.createObjectStore(n,{keyPath:k});if(n!=='chats'&&!st.indexNames.contains('byChat'))st.createIndex('byChat','chatKey',{unique:false});}};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});return invDbPromise;}
-        function invOp(store,mode,fn){return invOpenDb().then(db=>new Promise((resolve,reject)=>{
-            let tx,requestResult,requestValue,requestSeen=false,settled=false;
-            const finish=(ok,value)=>{if(settled)return;settled=true;ok?resolve(value):reject(value);};
-            try{tx=db.transaction(store,mode);const st=tx.objectStore(store);requestResult=fn(st);
-                if(requestResult&&typeof requestResult==='object'&&typeof requestResult.addEventListener==='function'&&('onsuccess' in requestResult)){
-                    requestResult.addEventListener('success',()=>{requestValue=requestResult.result;requestSeen=true;});
-                    requestResult.addEventListener('error',()=>finish(false,requestResult.error||Error('IndexedDB request failed')));
-                }
-            }catch(e){finish(false,e);return;}
-            tx.addEventListener('complete',()=>finish(true,requestSeen?requestValue:requestResult));
-            tx.addEventListener('error',()=>finish(false,tx.error||Error('IndexedDB transaction failed')));
-            tx.addEventListener('abort',()=>finish(false,tx.error||Error('IndexedDB transaction aborted')));
-        }));}
-        const invAll=(store,key)=>invOp(store,'readonly',st=>st.index('byChat').getAll(key));
-        async function invLog(key,action,payload){await invOp('events','readwrite',st=>st.put({chatKey:key,eventId:invUid('event'),action,payload,timestamp:new Date().toISOString()}));}
-        function invOwners(state){const active=getActiveNames();const user=ensureEntity(state,active.userName,'user');const main=ensureEntity(state,active.mainName,'main_character');const arr=[];for(const e of Object.values(state.entities||{})){if(!e?.id||!e?.name)continue;arr.push({id:e.id,name:e.name,type:e.type||'npc',aliases:e.aliases||[]});}return arr;}
-        async function invEnsure(key,state){let chat=await invOp('chats','readonly',st=>st.get(key));if(!chat){chat={chatKey:key,schemaVersion:3,createdAt:new Date().toISOString()};await invOp('chats','readwrite',st=>st.put(chat));await invLog(key,'chat_init',{integrated:true});}
-            // Legacy Inventory System entity IDs are mapped to Dynamic Relationships IDs by name/alias.
-            const legacy=await invAll('entities',key),owners=invOwners(state);await saveState(false);const map={user:idFor(getActiveNames().userName),char:idFor(getActiveNames().mainName)};
-            for(const old of legacy){if(old.entityId==='user'||old.kind==='user')map[old.entityId]=idFor(getActiveNames().userName);else{const match=owners.find(o=>norm(o.name)===norm(old.name)||(o.aliases||[]).some(a=>norm(a)===norm(old.name))||(old.alias||'')&&(o.aliases||[]).some(a=>norm(a)===norm(old.alias)));if(match)map[old.entityId]=match.id;}}
-            const items=await invAll('items',key);for(const it of items){if(it.ownerId&&map[it.ownerId]&&it.ownerId!==map[it.ownerId]){it.ownerId=map[it.ownerId];await invOp('items','readwrite',st=>st.put(it));}}
-            return {owners,legacyMap:map};
-        }
-        async function invGetState(key,state){const {owners}=await invEnsure(key,state);const [items,events]=await Promise.all([invAll('items',key),invAll('events',key)]);events.sort((a,b)=>String(b.timestamp).localeCompare(String(a.timestamp)));return {owners,items,events:events.slice(0,100)};}
-        async function invAddItem(key,name,qty,owner,description){const row={chatKey:key,itemId:invUid('item'),name:name.trim(),quantity:Math.max(1,Math.floor(Number(qty)||1)),ownerId:owner||'',storageId:'',description:description||'',createdAt:new Date().toISOString()};await invOp('items','readwrite',st=>st.put(row));await invLog(key,'item_add',row);}
-        async function invDelete(key,id){const old=await invOp('items','readonly',st=>st.get([key,id]));await invOp('items','readwrite',st=>st.delete([key,id]));await invLog(key,'item_delete',old||{itemId:id});}
-        async function invBackup(key,state){const snap=await invGetState(key,state);const data={chatKey:key,items:snap.items,events:snap.events};const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='inventory-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
-        async function invRestore(key,file){const d=JSON.parse(await file.text());if(!Array.isArray(d.items))throw Error('Invalid inventory backup');for(const item of d.items){const row={...item,chatKey:key};await invOp('items','readwrite',st=>st.put(row));}for(const event of d.events||[]){const row={...event,chatKey:key,eventId:event.eventId||invUid('event')};await invOp('events','readwrite',st=>st.put(row));}await invLog(key,'backup_import',{filename:file.name});}
-        function invPrompt(){
-            if(!invSettings().enabled) return '';
-            const state=getState()||freshState();
-            const owners=invOwners(state).map(o=>`${o.name} [owner id: ${o.id}; aliases: ${(o.aliases||[]).join(', ')}]`).join('; ');
-            return `[INVENTORY MODULE — PRIVATE ITEM STATE\nKeep Dynamic Relationships sections in their exact order: Current Setting, Noticed Characters, Secret Thoughts. At the end of EVERY assistant reply, output exactly one hidden INVENTORY_ACTIONS comment, including when no item changes occurred (use an empty actions array). Record only completed story changes involving ordinary harmless items (acquire, give, transfer, discard, use up). Never invent inventory changes.\nOwners from the shared Dynamic Relationships registry: ${owners}. Use exact owner IDs. When a new active NPC appears, include a create_entity action for that NPC before referencing it as an owner. Keep inventories private; never reveal another owner's item list in narrative. Track only everyday belongings such as clothing, books, food, documents, keepsakes, and ordinary tools.\nRequired empty block: <!-- INVENTORY_ACTIONS {\"actions\":[]} -->. Example add block: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"add\",\"item\":\"book\",\"quantity\":1,\"owner\":\"owner-id\",\"description\":\"\"}]} -->. Allowed types: create_entity, add, remove, consume, transfer. create_entity fields: name, kind:npc, alias (optional). For remove/consume/transfer specify owner; transfer also requires toOwner. Positive quantities only; maximum 20 actions. Do not expose this comment in story text or reveal private inventory contents.]`;
-        }
-        function invParse(text){const re=/<!--\s*INVENTORY_ACTIONS\s*([\s\S]*?)\s*-->/gi;let m,last=null;while((m=re.exec(String(text||'')))!==null)last=m[1].trim();if(!last)return null;return JSON.parse(last);}
-        async function invProcess(key,msgKey,text,state){const block=invParse(text);if(!block||!Array.isArray(block.actions))return {status:'none'};const processed=await invOp('processed','readonly',st=>st.get([key,msgKey]));if(processed)return {status:'duplicate'};if(!invSettings().autoApply){await invLog(key,'ai_action_skipped',{status:'skipped',message:'Auto-apply disabled'});await invOp('processed','readwrite',st=>st.put({chatKey:key,messageKey:msgKey,processedAt:new Date().toISOString()}));return {status:'disabled'};}if(block.actions.length>20)throw Error('Maximum 20 actions');const owners=invOwners(state);const ownerId=v=>{if(!v)return '';const exact=owners.find(o=>o.id===v||norm(o.name)===norm(v)||(o.aliases||[]).some(a=>norm(a)===norm(v)));if(!exact)throw Error(`Unknown owner: ${v}`);return exact.id;};const results=[];
-            for(const a of block.actions){if(a.type==='create_entity'){const name=cleanName(a.name);if(!name)throw Error('NPC name required');const entity=ensureEntity(state,name,'npc',a.alias?[a.alias]:[]);await saveState(false);updateSystemInjection();if(!owners.some(o=>o.id===entity.id))owners.push({id:entity.id,name:entity.name,type:entity.type,aliases:entity.aliases||[]});results.push({type:a.type,item:name,status:'success',message:`Registered ${name} in shared character registry`});continue;}if(!['add','remove','consume','transfer'].includes(a.type))throw Error('Unsupported inventory action');const item=String(a.item||'').trim();if(!item)throw Error('Item name required');const qty=Math.max(1,Math.floor(Number(a.quantity)||1));const from=ownerId(a.owner),to=a.type==='transfer'?ownerId(a.toOwner):'';if(a.type==='add'){await invAddItem(key,item,qty,from,String(a.description||'').slice(0,500));results.push({type:a.type,item,status:'success',message:`Added ${item} ×${qty} to ${owners.find(o=>o.id===from)?.name||'unassigned'}`});continue;}
-                const rows=(await invAll('items',key)).filter(i=>norm(i.name)===norm(item)&&i.ownerId===from);const total=rows.reduce((n,i)=>n+i.quantity,0);if(total<qty)throw Error(`Not enough ${item} for ${owners.find(o=>o.id===from)?.name||'unassigned'} (${total}/${qty})`);let remaining=qty;for(const row of rows){const take=Math.min(remaining,row.quantity);remaining-=take;if(a.type==='transfer'){if(take===row.quantity){row.ownerId=to;await invOp('items','readwrite',st=>st.put(row));}else{row.quantity-=take;await invOp('items','readwrite',st=>st.put(row));await invAddItem(key,row.name,take,to,row.description);}}else{row.quantity-=take;if(row.quantity<=0)await invOp('items','readwrite',st=>st.delete([key,row.itemId]));else await invOp('items','readwrite',st=>st.put(row));}if(remaining<=0)break;}await invLog(key,a.type,{item,quantity:qty,owner:from,toOwner:to,status:'success',message:`${a.type} ${item} ×${qty}`});results.push({type:a.type,item,status:'success',message:`${a.type} ${item} ×${qty}`});}
-            await invOp('processed','readwrite',st=>st.put({chatKey:key,messageKey:msgKey,processedAt:new Date().toISOString()}));return {status:'applied',results};}
-        function invRender(content, state) {
-            const key = invKey();
-            const details = document.createElement('details');
-            details.className = 'dr-collapsible dr-inventory';
-            details.open = false;
-            const summary = document.createElement('summary');
-            summary.textContent = `Inventory Module · ${invSettings().enabled ? 'ON' : 'OFF'}`;
-            details.append(summary);
-            const body = document.createElement('div');
-            body.className = 'dr-inventory-content';
-            body.innerHTML = `<div class="dr-inv-toolbar"><button type="button" class="menu_button" data-inv="refresh">Refresh</button><button type="button" class="menu_button" data-inv="backup">Backup</button><label class="menu_button">Restore<input data-inv="restore" type="file" accept=".json" hidden></label><label class="dr-setting"><input data-inv="enabled" type="checkbox" ${invSettings().enabled ? 'checked' : ''}> Enable Inventory module (AI tracking)</label><label class="dr-setting"><input data-inv="auto" type="checkbox" ${invSettings().autoApply ? 'checked' : ''}> Auto-apply AI changes</label></div><p class="dr-muted" data-inv="status">Loading shared character registry…</p><details class="dr-inv-diagnostic"><summary>AI pipeline diagnostics</summary><p data-inv="diag">IndexedDB: opening and reading owners…</p></details><div data-inv="items"></div><details class="dr-inv-add" open><summary>Add item</summary><div class="dr-inv-form"><input data-inv="name" placeholder="Item name"><input data-inv="qty" type="number" min="1" value="1"><select data-inv="owner"></select><input data-inv="desc" placeholder="Description"><button type="button" class="menu_button" data-inv="add">Add</button></div></details><p class="dr-muted">AI inventory tracking is experimental. Backup regularly.</p>`;
-            details.append(body);
-            content.append(details);
-            invRoot = details;
-            const q = selector => body.querySelector(`[data-inv="${selector}"]`);
-            const setStatus = (message) => { if (q('status')) q('status').textContent = message; };
-            const setDiag = (message) => { if (q('diag')) q('diag').textContent = message; };
-            q('enabled').addEventListener('change', () => {
-                invSettings().enabled = q('enabled').checked;
-                invSaveSettings();
-                updateSystemInjection();
-                renderPanel();
-            });
-            q('auto').addEventListener('change', () => {
-                invSettings().autoApply = q('auto').checked;
-                invSaveSettings();
-            });
-            q('refresh').addEventListener('click', () => renderPanel());
-            q('backup').addEventListener('click', () => invBackup(key, state).catch(e => setStatus('Backup failed: ' + e.message)));
-            q('restore').addEventListener('change', async () => {
-                if (!q('restore').files[0]) return;
-                try { await invRestore(key, q('restore').files[0]); renderPanel(); setStatus('Backup restored.'); }
-                catch (e) { setStatus('Restore failed: ' + e.message); }
-            });
-            q('add').addEventListener('click', async () => {
-                if (!key) return setStatus('Open a chat first.');
-                if (!q('name').value.trim()) return setStatus('Item name required.');
-                try { await invAddItem(key, q('name').value, q('qty').value, q('owner').value, q('desc').value); renderPanel(); }
-                catch (e) { setStatus('Add failed: ' + e.message); }
-            });
-            if (!key) {
-                setStatus('Open a chat to load owners and inventories.');
-                setDiag('No active chat key.');
-                return updateSystemInjection();
-            }
-            if (!invSettings().enabled) setStatus('AI tracking disabled. Manual inventory controls remain available.');
-            invGetState(key, state).then(data => {
-                if (!invRoot || !invRoot.isConnected) return;
-                q('owner').innerHTML = '<option value="">Unassigned</option>' + data.owners.map(o => `<option value="${invEscape(o.id)}">${invEscape(o.name)} (${invEscape(o.type)})</option>`).join('');
-                setStatus(`Shared character registry · ${data.owners.length} owner(s) · separate item database${data.owners.length ? ': ' + data.owners.map(o => o.name).join(', ') : ' — no owners detected'}`);
-                setDiag(`Registry/database loaded successfully. Owners found: ${data.owners.length}.`);
-                const cards = data.owners.map(o => {
-                    const list = data.items.filter(i => i.ownerId === o.id);
-                    return `<section class="dr-inv-owner"><strong>${invEscape(o.name)} · Inventory</strong><ul>${list.length ? list.map(i => `<li><span><b>${invEscape(i.name)} ×${i.quantity}</b>${i.description ? `<small>${invEscape(i.description)}</small>` : ''}</span><button class="menu_button" data-del="${invEscape(i.itemId)}" type="button">×</button></li>`).join('') : '<li class="dr-inv-empty">Empty inventory</li>'}</ul></section>`;
-                }).join('');
-                const unassigned = data.items.filter(i => !i.ownerId);
-                const unassignedHtml = unassigned.length ? `<section class="dr-inv-owner"><strong>Unassigned</strong><ul>${unassigned.map(i => `<li><span>${invEscape(i.name)} ×${i.quantity}</span><button class="menu_button" data-del="${invEscape(i.itemId)}" type="button">×</button></li>`).join('')}</ul></section>` : '';
-                const logs = data.events.slice(0, 35).map(e => `<li><span><b>${invEscape(e.action)}</b><small>${invEscape(e.payload?.message || e.payload?.item || JSON.stringify(e.payload || {}))}</small><small>${new Date(e.timestamp).toLocaleString()}</small></span></li>`).join('');
-                q('items').innerHTML = `<div class="dr-inv-section"><strong>Owners from Dynamic Relationships (${data.owners.length})</strong>${cards}${unassignedHtml}</div><details class="dr-inv-section"><summary>Activity log</summary><ul>${logs || '<li class="dr-inv-empty">No events yet</li>'}</ul></details>`;
-                q('items').querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => {
-                    if (!confirm('Delete this item?')) return;
-                    try { await invDelete(key, btn.dataset.del); renderPanel(); }
-                    catch (e) { setStatus('Delete failed: ' + e.message); }
-                });
-            }).catch(e => {
-                setStatus('Inventory load error: ' + e.message);
-                setDiag('IndexedDB/registry load failed: ' + e.message);
-                console.error('[DR Inventory] owner load failed', e);
-            });
-            updateSystemInjection();
-        }
-        async function invMessageReceived(eventArg) {
-            if (!invSettings().enabled || invBusy) return;
-            const key = invKey();
-            if (!key) return;
-            invBusy = true;
-            try {
-                const chat = getContext()?.chat || [];
-                const messageId = typeof eventArg === 'number' ? eventArg : (eventArg?.messageId ?? eventArg?.id ?? eventArg?.mesId ?? 'event');
-                const diag = () => invRoot?.isConnected ? invRoot.querySelector('[data-inv="diag"]') : null;
-                const status = () => invRoot?.isConnected ? invRoot.querySelector('[data-inv="status"]') : null;
-                const d = diag();
-                if (d) d.textContent = `MESSAGE_RECEIVED received (message id: ${messageId}); scanning recent assistant messages…`;
-                let chosen = null, text = '';
-                for (let retry = 0; retry < 6 && !chosen; retry++) {
-                    const candidates = [];
-                    const supplied = eventArg && typeof eventArg === 'object' ? (eventArg.message || eventArg.mes || eventArg) : null;
-                    if (supplied && typeof supplied === 'object' && !supplied.is_user && supplied.role !== 'user') candidates.push(supplied);
-                    if (Number.isInteger(messageId) && chat[messageId]) candidates.push(chat[messageId]);
-                    for (let i = chat.length - 1; i >= Math.max(0, chat.length - 5); i--) {
-                        const m = chat[i];
-                        if (m && !m.is_user && m.role !== 'user' && (m.mes || m.message || m.content) && !candidates.includes(m)) candidates.push(m);
-                    }
-                    for (const m of candidates) {
-                        if (m?.is_user || m?.role === 'user') continue;
-                        const t = m.mes || m.message || m.content || '';
-                        if (String(t).includes('INVENTORY_ACTIONS')) { chosen = m; text = String(t); break; }
-                    }
-                    if (!chosen && retry < 5) await new Promise(r => setTimeout(r, 200));
-                }
-                const state = getState();
-                if (!chosen) {
-                    if (d) d.textContent = `Message received (id ${messageId}); scan complete. No INVENTORY_ACTIONS block found in the recent assistant messages.`;
-                    if (status) status.textContent = 'Response scan completed; no inventory action block was returned.';
-                    await invLog(key, 'ai_action_none', { status: 'none', message: 'No INVENTORY_ACTIONS block detected after retry window', messageId });
-                    return;
-                }
-                const msgKey = String(chosen.mesId || chosen.id || chosen.send_date || `${chat.indexOf(chosen)}_${text.slice(0, 90)}`);
-                const result = await invProcess(key, msgKey, text, state);
-                if (d) d.textContent = result.status === 'applied' ? `Applied ${result.results.length} action(s).` : `Action block detected; processing status: ${result.status}.`;
-                if (status) status.textContent = d?.textContent || '';
-                renderPanel();
-            } catch (e) {
-                console.warn('[DR Inventory] response handler', e);
-                if (invRoot?.isConnected) {
-                    const d = invRoot.querySelector('[data-inv="diag"]');
-                    if (d) d.textContent = 'Error: ' + e.message;
-                }
-            } finally { invBusy = false; }
-        }
-        function invBind(){const ctx=getContext();if(!ctx?.eventSource||!ctx?.event_types)return;const ev=ctx.event_types;if(ev.MESSAGE_RECEIVED)ctx.eventSource.on(ev.MESSAGE_RECEIVED,evMsg=>invMessageReceived(evMsg));}
-        window.DynamicRelationshipsInventory={render:invRender,promptText:invPrompt,isEnabled:()=>!!invSettings().enabled};invBind();updateSystemInjection();renderPanel();
-    })();
-
 })();

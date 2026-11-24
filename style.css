@@ -196,7 +196,29 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
-/* Integrated Inventory module */
-.dr-inventory{margin-top:12px;border:1px solid var(--SmartThemeBorderColor);border-radius:6px;padding:8px}.dr-inventory>summary,.dr-inv-add>summary,.dr-inv-diagnostic>summary{cursor:pointer;font-weight:600}.dr-inventory-content{padding:8px 2px}.dr-inv-toolbar,.dr-inv-form{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0}.dr-inv-form input,.dr-inv-form select{flex:1;min-width:100px}.dr-inv-owner{margin:8px 0;padding:8px;border:1px solid var(--SmartThemeBorderColor);border-radius:5px}.dr-inv-owner ul,.dr-inv-section ul{list-style:none;padding:0;margin:5px 0}.dr-inv-owner li,.dr-inv-section li{display:flex;justify-content:space-between;gap:6px;padding:5px;border-bottom:1px solid var(--SmartThemeBorderColor)}.dr-inv-owner li>span,.dr-inv-section li>span{display:flex;flex-direction:column;min-width:0}.dr-inv-owner small,.dr-inv-section small{opacity:.7;overflow-wrap:anywhere}.dr-inv-empty{opacity:.65;font-style:italic}.dr-inv-section{margin:10px 0}.dr-inv-diagnostic{padding:6px;border:1px solid var(--SmartThemeBorderColor);border-radius:5px}
+/* === Inventory module (inside Dynamic Relationships) === */
+#dynamic-relationships-extension .dr-inventory-form {
+    display: grid; grid-template-columns: minmax(130px, 1fr) minmax(120px, 1fr) 80px auto;
+    gap: 0.4rem; align-items: center; margin: 0.5rem 0;
+}
+#dynamic-relationships-extension .dr-inventory-input {
+    min-width: 0; width: 100%; padding: 0.3rem 0.45rem;
+    color: var(--SmartThemeBodyColor); background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px;
+}
+#dynamic-relationships-extension .dr-inventory-owner {
+    border: 1px solid var(--SmartThemeBorderColor); border-radius: 7px;
+    padding: 0.5rem; margin: 0.45rem 0; background: rgba(0,0,0,0.08);
+}
+#dynamic-relationships-extension .dr-inventory-owner > strong { display: block; margin-bottom: 0.35rem; }
+#dynamic-relationships-extension .dr-inventory-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
+#dynamic-relationships-extension .dr-inventory-item { display: grid; grid-template-columns: minmax(80px, 1fr) 65px auto auto; gap: 0.35rem; align-items: center; }
+#dynamic-relationships-extension .dr-inventory-log { margin-top: 0.6rem; }
+#dynamic-relationships-extension .dr-inventory-log > summary { cursor: pointer; }
+#dynamic-relationships-extension .dr-inventory-log li { padding: 0.25rem 0; font-size: 0.84em; border-bottom: 1px solid var(--SmartThemeBorderColor); overflow-wrap: anywhere; }
+@media (max-width: 520px) {
+    #dynamic-relationships-extension .dr-inventory-form { grid-template-columns: 1fr 1fr; }
+    #dynamic-relationships-extension .dr-inventory-item { grid-template-columns: 1fr 60px; }
+}
 
-.dr-state-only-placeholder { opacity: .72; font-style: italic; padding: .25em 0; }
+.dr-state-only-placeholder { opacity: 0.75; font-style: italic; padding: 0.25rem 0; }
