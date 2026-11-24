@@ -1,16 +1,16 @@
-# Dynamic Relationships 0.8.12
+# Dynamic Relationships Inventory 0.8.13
 
-Dynamic Relationships is a SillyTavern extension for tracking character relationships and scene state. This build also includes a minimal per-character inventory module.
+Integrated inventory module and stability fixes for state footer parsing/rendering.
 
-## Inventory module
-- Inventory records are stored in the current chat metadata alongside Dynamic Relationships state.
-- Inventory UI is part of the Dynamic Relationships panel; no separate extension or character registry is created.
-- Each item has only a name and quantity.
-- Manual add, quantity update, and delete operations are supported.
-- The activity journal records manual and AI changes, timestamps, owner, action, and quantity change.
-- AI inventory updates use an `INVENTORY_ACTIONS` comment block in assistant output, including an empty actions list when nothing changed; the formatter removes the protocol block from the rendered message. Transfers are logged on both giver and receiver sides. Replies without a valid block are recorded diagnostically. User thoughts are filtered from the thoughts footer.
-- Settings include inventory enable/disable and exclusion of entities explicitly marked or named Narrator/Рассказчик from inventory tracking (enabled by default); active {{char}} is not excluded automatically.
-- When inventory tracking is disabled, data remains stored and AI inventory processing is skipped.
+## Changes
+- Robust parsing for scene setting labels and emoji variants.
+- More tolerant noticed-character section parser, including alternate marker spelling and multiline fields.
+- Thoughts parser accepts both `Name: thought` and a standalone registered name followed by multiline thought. User persona thoughts are filtered (including entities marked user/main_character), while active bot character thoughts are not automatically excluded.
+- Footer CSS scoped to the extension container, including narrow-screen rules.
+- Inventory AI may update user inventory when a completed event is narrated.
+- Completed transfers/removals reconcile untracked stock and add explicit journal correction entries.
+- Narrator exclusion is limited to explicitly named/typed Narrator; main character owner inventory is not omitted by default.
+- Version metadata synchronized to 0.8.13.
 
-## Install
-Copy this extension folder into `SillyTavern/public/scripts/extensions/third-party/` (or install through the extension installer if hosted in a repository), then reload SillyTavern.
+## Validation
+Node syntax check, parser sample tests, inventory transfer reconciliation sample, and ZIP integrity check performed. Runtime validation inside SillyTavern was not performed.

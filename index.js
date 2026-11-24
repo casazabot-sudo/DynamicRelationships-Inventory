@@ -10,7 +10,7 @@
     const LEGACY_KEY = 'dynamic_relationships_v1';
     const ROOT_ID = 'dynamic-relationships-extension';
     const MACRO_NAME = 'dr_relationships';
-    const VERSION = '0.8.11';
+    const VERSION = '0.8.13';
     const METRICS = ['trust', 'affection', 'respect', 'attachment', 'attraction', 'fear', 'jealousy', 'irritation', 'admiration'];
     const LABELS = {
         trust: 'Доверие', affection: 'Симпатия', respect: 'Уважение',
@@ -42,15 +42,14 @@
     const CHAR_BLOCK_MARKER = '--- ✧ 🌸 ЗАМЕЧАН ПЕРСОНАЖ ✧ ---';
     const THOUGHT_BLOCK_MARKER = '--- ✧ 💭 ТАЙНЫЕ МЫСЛИ ✧ ---';
 
-    // Регулярки для парсинга
-    const SCENE_BLOCK_RE = /---\s*✧\s*ТЕКУЩИЙ\s*СЕТТИНГ\s*✧\s*---\s*\n?\s*⌛\s*Дата\s*и\s*Время\s*:\s*([^\n]*)\n?\s*☁️\s*Погода\s*:\s*([^\n]*)\n?\s*✨\s*Локация\s*:\s*([^\n]*)/iu;
-    const CHAR_BLOCK_RE = /---\s*✧\s*🌸\s*ЗАМЕЧАН\s*ПЕРСОНАЖ\s*✧\s*---\s*([\s\S]*?)(?=(?:\n\s*---)|$)/iu;
-    const THOUGHT_BLOCK_RE = /---\s*✧\s*💭\s*ТАЙНЫЕ\s*МЫСЛИ\s*✧\s*---\s*([\s\S]*?)(?=(?:\n\s*---)|$)/iu;
+    // Tolerant parsing: allow emoji variants, missing emojis and minor label changes.
+    const SCENE_BLOCK_RE = /---\s*✧\s*ТЕКУЩИЙ\s*СЕТТИНГ\s*✧\s*---\s*([\s\S]*?)(?=\n\s*---\s*✧|$)/iu;
+    const CHAR_BLOCK_RE = /---\s*✧\s*(?:🌸\s*)?ЗАМЕЧ(?:АН|ЕН)\s*ПЕРСОНАЖ\s*✧\s*---\s*([\s\S]*?)(?=\n\s*---\s*✧|$)/iu;
+    const THOUGHT_BLOCK_RE = /---\s*✧\s*(?:💭\s*)?ТАЙНЫЕ\s*МЫСЛИ\s*✧\s*---\s*([\s\S]*?)(?=\n\s*---\s*✧|$)/iu;
 
-    // Регулярки для вырезания из контекста
     const STRIP_SCENE_RE = /---\s*✧\s*ТЕКУЩИЙ\s*СЕТТИНГ\s*✧\s*---[\s\S]*?(?=(?:\n\s*---\s*✧)|$)/giu;
-    const STRIP_CHAR_RE = /---\s*✧\s*🌸\s*ЗАМЕЧАН\s*ПЕРСОНАЖ\s*✧\s*---[\s\S]*?(?=(?:\n\s*---\s*✧)|$)/giu;
-    const STRIP_THOUGHT_RE = /---\s*✧\s*💭\s*ТАЙНЫЕ\s*МЫСЛИ\s*✧\s*---[\s\S]*?(?=(?:\n\s*---\s*✧)|$)/giu;
+    const STRIP_CHAR_RE = /---\s*✧\s*(?:🌸\s*)?ЗАМЕЧ(?:АН|ЕН)\s*ПЕРСОНАЖ\s*✧\s*---[\s\S]*?(?=(?:\n\s*---\s*✧)|$)/giu;
+    const STRIP_THOUGHT_RE = /---\s*✧\s*(?:💭\s*)?ТАЙНЫЕ\s*МЫСЛИ\s*✧\s*---[\s\S]*?(?=(?:\n\s*---\s*✧)|$)/giu;
 
     let busy = false;
     let registered = false;
@@ -305,18 +304,18 @@
 
     function parseSceneBlock(text) {
         if (!text) return null;
-        const m = String(text).match(SCENE_BLOCK_RE);
-        if (!m) return null;
-        const clean = (v) => {
-            const s = String(v ?? '').replace(/\s+/g, ' ').trim();
-            if (!s) return '';
-            if (/^[—\-–]+$/.test(s)) return '';
-            if (/^[\(\s]*неизвестно[\)\s]*$/i.test(s)) return '';
-            return s.slice(0, 220);
+        const match = String(text).match(SCENE_BLOCK_RE);
+        if (!match) return null;
+        const content = match[1];
+        const field = (label, emojiPattern) => {
+            const re = new RegExp(`(?:${emojiPattern}\\s*)?${label}\\s*[:：]\\s*([^\\n]*)`, 'iu');
+            const m = content.match(re);
+            const value = String(m?.[1] || '').replace(/\s+/g, ' ').trim();
+            return (!value || /^(?:—|-|неизвестно)$/i.test(value)) ? '' : value.slice(0, 220);
         };
-        const time = clean(m[1]);
-        const weather = clean(m[2]);
-        const location = clean(m[3]);
+        const time = field('Дата\\s*и\\s*время', '[⌛⏳🕒🕰️]');
+        const weather = field('Погода', '☁️?');
+        const location = field('Локация', '✨?');
         if (!time && !weather && !location) return null;
         return { time, weather, location };
     }
@@ -325,39 +324,34 @@
         if (!text) return null;
         const blockMatch = String(text).match(CHAR_BLOCK_RE);
         if (!blockMatch) return null;
-        
         const content = blockMatch[1];
-        const characters = [];
-        
-        const multiLineClean = (v) => {
-            return String(v ?? '').split('\n').map(l => l.trim()).filter(Boolean).join('\n').slice(0, 600);
-        };
-
-        const charBlocks = content.split(/(?=(?:♂️|♀️|⚧️))/u);
-        
-        for (const block of charBlocks) {
-            const genderMatch = block.match(/^(♂️|♀️|⚧️)/u);
-            if (!genderMatch) continue;
-            const gender = genderMatch[1];
-            
-            const nameMatch = block.match(/(?:♂️|♀️|⚧️)\s*([^\n(]+)(?:\s*\(([^)]+)\))?/u);
-            const name = nameMatch ? cleanName(nameMatch[1]) : '';
-            const role = nameMatch && nameMatch[2] ? cleanName(nameMatch[2]) : '';
-            
-            const statusMatch = block.match(/Статус:\s*([\s\S]*?)(?=\n\s*Одежда:|$)/iu);
-            const status = statusMatch ? multiLineClean(statusMatch[1]) : '—';
-            
-            const clothesMatch = block.match(/Одежда:\s*([\s\S]*?)(?=\n\s*🧭|$)/iu);
-            const clothes = clothesMatch ? multiLineClean(clothesMatch[1]) : '—';
-            
-            if (name) {
-                characters.push({ gender, name, role, status, clothes });
-            }
+        const cleanField = v => String(v || '').split('\n').map(x => x.trim()).filter(Boolean).join('\n').slice(0, 600);
+        const lines = content.split('\n');
+        const blocks = [];
+        let current = [];
+        const isHeading = line => /^(?:♂️|♀️|⚧️)\s*[^\n]+|^[\p{L}][^\n]{0,70}\s*\([^\n)]{1,40}\)\s*$/u.test(line.trim());
+        for (const raw of lines) {
+            const line = raw.trim();
+            if (isHeading(line) && current.length) { blocks.push(current); current = []; }
+            if (line) current.push(line);
         }
-        
-        const posMatch = content.match(/🧭\s*Где\s*мы:\s*([\s\S]+)/iu);
-        const spatialPos = posMatch ? multiLineClean(posMatch[1]) : '';
-        
+        if (current.length) blocks.push(current);
+        const characters = [];
+        for (const rows of blocks) {
+            const head = rows[0] || '';
+            const gender = head.match(/^(♂️|♀️|⚧️)/u)?.[1] || '';
+            const cleanHead = head.replace(/^(?:♂️|♀️|⚧️)\s*/u, '').trim();
+            const nameRole = cleanHead.match(/^([^(:]+?)(?:\s*\(([^)]*)\))?\s*$/u);
+            const name = cleanName(nameRole?.[1] || '');
+            const role = cleanName(nameRole?.[2] || '');
+            if (!name || /^(?:статус|состояние|одежда|наряд|где мы)$/i.test(name)) continue;
+            const rest = rows.slice(1).join('\n');
+            const statusMatch = rest.match(/(?:Статус|Состояние)\s*[:：]\s*([\s\S]*?)(?=\n\s*(?:Одежда|Наряд)\s*[:：]|$)/iu);
+            const clothesMatch = rest.match(/(?:Одежда|Наряд)\s*[:：]\s*([\s\S]*?)(?=\n\s*(?:🧭\s*)?Где\s*мы\s*[:：]|$)/iu);
+            characters.push({ gender, name, role, status: cleanField(statusMatch?.[1]) || '—', clothes: cleanField(clothesMatch?.[1]) || '—' });
+        }
+        const posMatch = content.match(/(?:🧭\s*)?Где\s*мы\s*[:：]\s*([\s\S]+)/iu);
+        const spatialPos = cleanField(posMatch?.[1]);
         if (!characters.length && !spatialPos) return null;
         return { characters, spatialPos };
     }
@@ -366,28 +360,30 @@
         if (!text) return null;
         const blockMatch = String(text).match(THOUGHT_BLOCK_RE);
         if (!blockMatch) return null;
-        
         const content = blockMatch[1];
         const thoughts = [];
         const lines = content.split('\n');
         let currentThought = null;
-
+        const state = getState();
+        const active = getActiveNames();
+        const knownNames = new Set([active.userName, active.mainName, ...Object.values(state?.entities || {}).flatMap(e => [e.name, ...(e.aliases || [])])].map(norm).filter(Boolean));
         for (const line of lines) {
-            const m = line.match(/^\s*([^:]+):\s*(.*)$/);
-            if (m) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            const colon = trimmed.match(/^([^:：]{1,80})[:：]\s*(.*)$/);
+            const standalone = !colon && knownNames.has(norm(trimmed)) ? { name: trimmed, text: '' } : null;
+            const speaker = colon ? { name: colon[1], text: colon[2] } : standalone;
+            if (speaker) {
                 if (currentThought) thoughts.push(currentThought);
-                currentThought = {
-                    name: cleanName(m[1]),
-                    text: cleanText(m[2])
-                };
-            } else if (currentThought && line.trim()) {
-                currentThought.text += '\n' + line.trim();
+                currentThought = { name: cleanName(speaker.name), text: cleanText(speaker.text) };
+            } else if (currentThought) {
+                currentThought.text += (currentThought.text ? '\n' : '') + trimmed;
             }
         }
         if (currentThought) thoughts.push(currentThought);
-
-        const userName = norm(getActiveNames().userName);
-        const filtered = thoughts.filter(t => norm(t.name) !== userName && norm(t.name) !== 'user' && norm(t.name) !== '{{user}}');
+        const forbidden = new Set([norm(active.userName), norm('user'), norm('{{user}}')].filter(Boolean));
+        for (const e of Object.values(state?.entities || {})) if (e.type === 'user' || e.type === 'main_character') { forbidden.add(norm(e.name)); for (const a of e.aliases || []) forbidden.add(norm(a)); }
+        const filtered = thoughts.filter(t => !forbidden.has(norm(t.name)) && t.text.trim());
         if (!filtered.length) return null;
         return { thoughts: filtered };
     }
@@ -537,7 +533,7 @@ ${state.excludeMainCharacter ? `- ВАЖНО: Пропусти мысли ${getA
                 const entries = (row.items || []).map(it => `${it.name} ×${it.quantity}`).join(', ') || 'пусто';
                 return `${owner}: ${entries}`;
             }).join('\n');
-            prompt += `\n[INVENTORY TRACKING — enabled]\n- Track only completed changes to items. Each item has only name and quantity.\n- Inventories are private per owner; never reveal another character's inventory or invent inventory contents.\n- ALWAYS append exactly one machine-readable block at the very end of every reply, even when no inventory change occurred. Use actions:[] when nothing changed. Format: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"add\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":1},{\"type\":\"remove\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":1},{\"type\":\"set\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":2},{\"type\":\"transfer\",\"from\":\"giver\",\"to\":\"receiver\",\"item\":\"item name\",\"quantity\":1}]} -->. Track only changes that actually completed in the scene, not intentions. For transfer, record both sides atomically. Never report user/{{user}} as an owner action unless user explicitly manually edits inventory.\n- Existing registered owners and current inventories (for continuity only; do not expose):\n${inventorySummary || 'No inventory records yet.'}\n${settings().excludeNarratorInventory ? `- EXCLUDE only an entity explicitly marked or named Narrator/Рассказчик. Do not exclude {{char}} merely because it is the active SillyTavern character.\n` : ''}`;
+            prompt += `\n[INVENTORY TRACKING — enabled]\n- Track only completed changes to items. Each item has only name and quantity.\n- Inventories are private per owner; never reveal another character's inventory or invent inventory contents.\n- ALWAYS append exactly one machine-readable block at the very end of every reply, even when no inventory change occurred. Use actions:[] when nothing changed. Format: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"add\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":1},{\"type\":\"remove\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":1},{\"type\":\"set\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":2},{\"type\":\"transfer\",\"from\":\"giver\",\"to\":\"receiver\",\"item\":\"item name\",\"quantity\":1}]} -->. Track only changes that actually completed in the scene, not intentions. For transfer, record both sides atomically. AI may update the {{user}} inventory when the scene shows the user actually receives, spends, consumes, loses, or transfers items. If the narrative explicitly confirms a completed transfer but giver inventory is missing/insufficient, still record the completed transfer; inventory processing will reconcile the missing starting quantity and log that correction.\n- Existing registered owners and current inventories (for continuity only; do not expose):\n${inventorySummary || 'No inventory records yet.'}\n${settings().excludeNarratorInventory ? `- EXCLUDE only an entity explicitly marked or named Narrator/Рассказчик. Do not exclude {{char}} merely because it is the active SillyTavern character.\n` : ''}`;
         }
 
         prompt += `]`;
@@ -1484,7 +1480,7 @@ ${body}
             if (owners.some(o => o.id === entity.id || norm(o.name) === norm(entity.name))) continue;
             owners.push({ id: entity.id || idFor(entity.name), name: entity.name, type: entity.type || 'npc' });
         }
-        if (!owners.some(o => o.id === mainId) && !settings().excludeNarratorInventory) owners.push({ id: mainId, name: names.mainName, type: 'main_character' });
+        if (!owners.some(o => o.id === mainId) && !(settings().excludeNarratorInventory && norm(names.mainName) === 'narrator')) owners.push({ id: mainId, name: names.mainName, type: 'main_character' });
         return owners;
     }
 
@@ -1500,6 +1496,11 @@ ${body}
         if (!clean) return null;
         const active = getActiveNames();
         if (norm(clean) === norm(active.userName)) return { id: idFor(active.userName), name: active.userName, type: 'user' };
+        if (norm(clean) === norm(active.mainName)) {
+            const mainEntity = findEntity(state, clean);
+            if (settings().excludeNarratorInventory && mainEntity && isNarratorEntity(mainEntity)) return null;
+            return { id: mainEntity?.id || idFor(active.mainName), name: active.mainName, type: mainEntity?.type || 'main_character' };
+        }
         const entity = findEntity(state, clean);
         if (settings().excludeNarratorInventory && entity && isNarratorEntity(entity)) return null;
         if (entity) return { id: entity.id, name: entity.name, type: entity.type };
@@ -1527,25 +1528,41 @@ ${body}
             return { status: 'success', owner: owner.name, item: itemName, before, after: before + qty };
         }
         if (type === 'remove' || type === 'consume') {
-            if (!existing || before < qty) return { status: 'error', reason: `Not enough ${itemName} in ${owner.name}'s inventory (have ${before}, requested ${qty})` };
-            existing.quantity = before - qty;
-            if (existing.quantity <= 0) ownerRow.items = ownerRow.items.filter(i => i !== existing);
-            inventoryLog(state, 'remove', owner.id, itemName, qty, source, { before, after: before - qty });
-            return { status: 'success', owner: owner.name, item: itemName, before, after: before - qty };
+            // AI remove/consume actions are completed scene events; reconcile untracked stock
+            // so the action is recorded rather than silently rejected for a missing baseline.
+            const actualBefore = Math.max(before, qty);
+            if (!existing && qty > 0) inventoryLog(state, 'adjustment', owner.id, itemName, qty, source, { before: 0, after: qty, reason: 'Completed scene removal; previously untracked stock reconciled.' });
+            else if (existing && before < qty) {
+                inventoryLog(state, 'adjustment', owner.id, itemName, qty - before, source, { before, after: qty, reason: 'Completed scene removal; insufficient tracked stock reconciled.' });
+                existing.quantity = qty;
+            }
+            const after = actualBefore - qty;
+            if (existing) { existing.quantity = after; if (after <= 0) ownerRow.items = ownerRow.items.filter(i => i !== existing); }
+            inventoryLog(state, 'remove', owner.id, itemName, qty, source, { before: actualBefore, after });
+            return { status: 'success', owner: owner.name, item: itemName, before: actualBefore, after };
         }
         if (type === 'transfer') {
             const receiver = ensureInventoryOwner(state, action.to || action.receiver || '');
             if (!receiver) return { status: 'error', reason: `Unknown transfer receiver: ${action.to || action.receiver || ''}` };
-            if (!existing || before < qty) return { status: 'error', reason: `Not enough ${itemName} in ${owner.name} to transfer (have ${before}, requested ${qty})` };
-            existing.quantity = before - qty;
-            if (existing.quantity <= 0) ownerRow.items = ownerRow.items.filter(i => i !== existing);
+            // The transfer block is emitted for completed scene events. If stock was not
+            // previously tracked, reconcile the giver's missing starting stock and log it.
+            if (!existing || before < qty) {
+                const missing = qty - before;
+                if (existing) existing.quantity = qty;
+                else ownerRow.items.push({ name: itemName, quantity: qty });
+                inventoryLog(state, 'adjustment', owner.id, itemName, missing, source, { before, after: qty, reason: 'Completed scene transfer; previously untracked stock reconciled.' });
+            }
+            const reconciledBefore = existing ? (Number(existing.quantity) || 0) : qty;
+            const transferBefore = reconciledBefore;
+            if (existing) { existing.quantity = transferBefore - qty; if (existing.quantity <= 0) ownerRow.items = ownerRow.items.filter(i => i !== existing); }
+            else ownerRow.items = ownerRow.items.filter(i => norm(i.name) !== norm(itemName));
             const receiverRow = inv.items[receiver.id] ??= { ownerId: receiver.id, ownerName: receiver.name, items: [] };
             const receiverItem = receiverRow.items.find(i => norm(i.name) === norm(itemName));
             const receiverBefore = receiverItem ? Number(receiverItem.quantity) || 0 : 0;
             if (receiverItem) receiverItem.quantity = receiverBefore + qty; else receiverRow.items.push({ name: itemName, quantity: qty });
-            inventoryLog(state, 'remove', owner.id, itemName, qty, source, { before, after: before - qty, transferTo: receiver.name });
+            inventoryLog(state, 'remove', owner.id, itemName, qty, source, { before: transferBefore, after: transferBefore - qty, transferTo: receiver.name });
             inventoryLog(state, 'add', receiver.id, itemName, qty, source, { before: receiverBefore, after: receiverBefore + qty, transferFrom: owner.name });
-            return { status: 'success', transfer: true, from: owner.name, to: receiver.name, item: itemName, quantity: qty };
+            return { status: 'success', transfer: true, from: owner.name, to: receiver.name, item: itemName, quantity: qty, reconciled: Math.max(0, qty - before) };
         }
         if (type === 'set') {
             if (existing && qty === 0) ownerRow.items = ownerRow.items.filter(i => i !== existing);

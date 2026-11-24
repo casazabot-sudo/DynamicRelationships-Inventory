@@ -80,7 +80,7 @@
 }
 
 /* === Scene Footer === */
-.dr-scene-footer {
+#dynamic-relationships-extension .dr-scene-footer {
     margin-top: 1.1em;
     padding: 0.65em 0.85em;
     border-top: 1px solid var(--SmartThemeBorderColor, #555);
@@ -89,18 +89,18 @@
     font-size: 0.92em;
     line-height: 1.55;
 }
-.dr-scene-title {
+#dynamic-relationships-extension .dr-scene-title {
     margin-bottom: 0.35em;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-align: center;
 }
-.dr-scene-line { display: flex; gap: 0.55em; align-items: flex-start; }
-.dr-scene-line > span:first-child { flex: 0 0 1.4em; }
-.dr-scene-placeholder { display: none; }
+#dynamic-relationships-extension .dr-scene-line { display: flex; gap: 0.55em; align-items: flex-start; }
+#dynamic-relationships-extension .dr-scene-line > span:first-child { flex: 0 0 1.4em; }
+#dynamic-relationships-extension .dr-scene-placeholder { display: none; }
 
 /* === Character Footer === */
-.dr-char-footer {
+#dynamic-relationships-extension .dr-char-footer {
     margin-top: 1.1em;
     padding: 0.65em 0.85em;
     border-top: 1px solid var(--SmartThemeBorderColor, #555);
@@ -109,32 +109,32 @@
     font-size: 0.92em;
     line-height: 1.55;
 }
-.dr-char-title {
+#dynamic-relationships-extension .dr-char-title {
     margin-bottom: 0.35em;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-align: center;
 }
-.dr-char {
+#dynamic-relationships-extension .dr-char {
     margin-bottom: 0.6em;
     padding: 0.4em 0.6em;
     background: rgba(255, 255, 255, 0.03);
     border-radius: 6px;
     border: 1px solid rgba(255, 255, 255, 0.06);
 }
-.dr-char:last-child { margin-bottom: 0; }
-.dr-char-name {
+#dynamic-relationships-extension .dr-char:last-child { margin-bottom: 0; }
+#dynamic-relationships-extension .dr-char-name {
     font-weight: 600;
     font-size: 1.05em;
     color: var(--SmartThemeEmColor, #fff);
     margin-bottom: 0.3em;
 }
-.dr-char-role {
+#dynamic-relationships-extension .dr-char-role {
     font-weight: 400;
     font-size: 0.85em;
     opacity: 0.7;
 }
-.dr-char-row {
+#dynamic-relationships-extension .dr-char-row {
     margin-top: 0.25em;
     display: flex;
     gap: 0.4em;
@@ -142,13 +142,13 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
-.dr-char-label {
+#dynamic-relationships-extension .dr-char-label {
     opacity: 0.6;
     min-width: 60px;
     font-size: 0.9em;
     flex-shrink: 0;
 }
-.dr-char-pos {
+#dynamic-relationships-extension .dr-char-pos {
     margin-top: 0.6em;
     padding: 0.4em 0.6em;
     background: rgba(200, 180, 255, 0.08);
@@ -160,7 +160,7 @@
 }
 
 /* === Thought Footer (Внутренний монолог) === */
-.dr-thought-footer {
+#dynamic-relationships-extension .dr-thought-footer {
     margin-top: 1.1em;
     padding: 0.65em 0.85em;
     border-top: 1px solid var(--SmartThemeBorderColor, #555);
@@ -169,26 +169,26 @@
     font-size: 0.92em;
     line-height: 1.55;
 }
-.dr-thought-title {
+#dynamic-relationships-extension .dr-thought-title {
     margin-bottom: 0.35em;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-align: center;
 }
-.dr-thought-entry {
+#dynamic-relationships-extension .dr-thought-entry {
     margin: 8px 0;
     padding: 8px 10px;
     background: rgba(255, 200, 150, 0.04);
     border-left: 2px solid rgba(255, 200, 150, 0.3);
     border-radius: 0 4px 4px 0;
 }
-.dr-thought-name {
+#dynamic-relationships-extension .dr-thought-name {
     color: rgba(255, 255, 255, 0.5);
     font-size: 0.9em;
     font-weight: 600;
     margin-bottom: 4px;
 }
-.dr-thought-text {
+#dynamic-relationships-extension .dr-thought-text {
     color: var(--SmartThemeBodyColor);
     font-size: 0.95em;
     line-height: 1.5;
@@ -221,11 +221,11 @@
     #dynamic-relationships-extension .dr-inventory-item { grid-template-columns: 1fr 60px; }
 }
 
-.dr-state-only-placeholder { opacity: 0.75; font-style: italic; padding: 0.25rem 0; }
+#dynamic-relationships-extension .dr-state-only-placeholder { opacity: 0.75; font-style: italic; padding: 0.25rem 0; }
 
 /* Narrow-screen footer spacing/alignment */
 @media (max-width: 520px) {
-  .dr-scene-footer, .dr-char-footer, .dr-thought-footer { box-sizing: border-box; width: 100%; margin-left: 0; margin-right: 0; padding: 0.55em 0.65em; }
-  .dr-scene-line { gap: 0.35em; }
-  .dr-scene-line > span:first-child { flex-basis: 1.2em; }
+  #dynamic-relationships-extension .dr-scene-footer, #dynamic-relationships-extension .dr-char-footer, #dynamic-relationships-extension .dr-thought-footer { box-sizing: border-box; width: 100%; margin-left: 0; margin-right: 0; padding: 0.55em 0.65em; }
+  #dynamic-relationships-extension .dr-scene-line { gap: 0.35em; }
+  #dynamic-relationships-extension .dr-scene-line > span:first-child { flex-basis: 1.2em; }
 }
