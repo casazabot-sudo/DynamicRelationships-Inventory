@@ -1,18 +1,16 @@
-# Dynamic Relationships + Inventory Module (v0.8.7)
+# Dynamic Relationships + Inventory v0.8.9
 
-This is the original Dynamic Relationships extension (based on upstream v0.8.4 source) with an optional, integrated Inventory section. Inventory is rendered inside the Dynamic Relationships panel and uses the same chat-scoped `state.entities` registry. Item storage remains in a separate IndexedDB database for continuity with Inventory System v0.3.x.
+Integrated Inventory module nested inside Dynamic Relationships. Inventory uses the shared Dynamic Relationships character registry and a separate IndexedDB for item records.
 
-## Integration changes
-- Inventory panel is nested inside the Dynamic Relationships panel.
-- User and main character are ensured in the shared character registry; detected NPCs are shared.
-- Inventory instructions are appended to the existing Dynamic Relationships prompt under its existing prompt key; no competing Inventory extension prompt is registered.
-- The original state-output section order is explicitly preserved: Current Setting -> Noticed Characters -> Secret Thoughts. The inventory command comment is requested after these sections, only when an item change occurred.
-- No Inventory generation interceptor is registered.
-- Inventory module and auto-apply have separate toggles.
-- Existing item database stores are retained; owner IDs for legacy `user` and `char` are mapped to current shared registry IDs.
+## v0.8.9 changes
+- Fixed Inventory IndexedDB request/transaction result handling.
+- Bumped inventory database schema to v4 and ensures the `byChat` indexes exist on stores, including existing stores.
+- Owner loading now displays loading state and reports registry/database errors instead of remaining blank.
+- MESSAGE_RECEIVED handler accepts event payload objects or IDs and reports scan completion explicitly.
+- Prevents fallback footer rendering when the formatter already rendered state footers.
+- Removes raw state-block paragraphs from formatted message display before adding footer cards.
 
-## Install from GitHub
-Upload the contents of this folder to the root of a GitHub repository, then install using SillyTavern Extensions -> Install Extension -> Git URL.
+## Install
+Upload these repository files to the root of a GitHub repository, then install via SillyTavern Extensions → Install Extension using the repository URL. Disable/remove the standalone Inventory extension. Back up chat and inventory data before upgrading.
 
-## Testing status
-`node --check index.js` and ZIP integrity checks passed. This package has not been run inside SillyTavern. Please test with Inventory disabled first, then enabled, and verify the three original output sections remain in the assistant response.
+Runtime testing in SillyTavern has not been performed in this environment.

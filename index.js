@@ -10,7 +10,7 @@
     const LEGACY_KEY = 'dynamic_relationships_v1';
     const ROOT_ID = 'dynamic-relationships-extension';
     const MACRO_NAME = 'dr_relationships';
-    const VERSION = '0.8.7';
+    const VERSION = '0.8.9';
     const METRICS = ['trust', 'affection', 'respect', 'attachment', 'attraction', 'fear', 'jealousy', 'irritation', 'admiration'];
     const LABELS = {
         trust: 'Доверие', affection: 'Симпатия', respect: 'Уважение',
@@ -558,20 +558,24 @@ ${state.excludeMainCharacter ? `- ВАЖНО: Пропусти мысли ${getA
 
     function stripBlocksFromHtml(html) {
         if (!html) return html;
-        let result = html;
-        if (settings().trackSceneModule) {
-            const sceneRe = /(?:<p>\s*)?---\s*✧\s*ТЕКУЩИЙ\s*СЕТТИНГ\s*✧\s*---[\s\S]*?(?=(?:<p>\s*)?---\s*✧|<\/body>|$)/iu;
-            result = result.replace(sceneRe, '');
+        // Use rendered paragraph boundaries instead of fragile regex against markdown HTML.
+        const markers = ['ТЕКУЩИЙ СЕТТИНГ', 'ЗАМЕЧАН ПЕРСОНАЖ', 'ТАЙНЫЕ МЫСЛИ'];
+        const enabled = markers.filter((_, i) => [settings().trackSceneModule, settings().trackCharacterModule, settings().trackThoughtsModule][i]);
+        const box = document.createElement('div');
+        box.innerHTML = String(html);
+        const children = Array.from(box.children);
+        let removing = false;
+        for (const child of children) {
+            const text = child.textContent || '';
+            const isMarker = markers.some(m => text.includes(m));
+            if (isMarker) {
+                removing = enabled.some(m => text.includes(m));
+                child.remove();
+                continue;
+            }
+            if (removing) child.remove();
         }
-        if (settings().trackCharacterModule) {
-            const charRe = /(?:<p>\s*)?---\s*✧\s*🌸\s*ЗАМЕЧАН\s*ПЕРСОНАЖ\s*✧\s*---[\s\S]*?(?=(?:<p>\s*)?---\s*✧|<\/body>|$)/iu;
-            result = result.replace(charRe, '');
-        }
-        if (settings().trackThoughtsModule) {
-            const thoughtRe = /(?:<p>\s*)?---\s*✧\s*💭\s*ТАЙНЫЕ\s*МЫСЛИ\s*✧\s*---[\s\S]*?(?=(?:<p>\s*)?---\s*✧|<\/body>|$)/iu;
-            result = result.replace(thoughtRe, '');
-        }
-        return result;
+        return box.innerHTML;
     }
 
     function syncBlocksToState(messageId, parsedScene, parsedChars, parsedThoughts) {
@@ -1053,6 +1057,9 @@ ${body}
                 () => chars ? characterFooterMarkup(chars) : '',
                 () => thoughts ? thoughtFooterMarkup(thoughts) : '',
             ];
+            // Prevent duplicate footer rendering when the messageFormatter hook already ran.
+            const existing = textEl.querySelector('.dr-scene-footer, .dr-char-footer, .dr-thought-footer');
+            if (existing) return;
             const htmlToAdd = footerOrder.map(render => render()).join('');
             if (htmlToAdd) textEl.insertAdjacentHTML('beforeend', htmlToAdd);
         });
@@ -1542,7 +1549,7 @@ ${body}
     // ---------------------------------------------------------------------
     (() => {
         const INV_DB = 'SillyTavern_InventorySystem';
-        const INV_VERSION = 3;
+        const INV_VERSION = 4;
         const INV_SETTINGS_KEY = 'dynamic_relationships_inventory';
         let invDbPromise = null;
         let invRoot = null;
@@ -1562,8 +1569,20 @@ ${body}
         };
         const invUid = p => `${p}_${crypto.randomUUID?crypto.randomUUID():Date.now()+'_'+Math.random().toString(36).slice(2)}`;
         const invEscape = v => String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-        function invOpenDb(){ if(invDbPromise)return invDbPromise; invDbPromise=new Promise((resolve,reject)=>{const r=indexedDB.open(INV_DB,INV_VERSION);r.onupgradeneeded=()=>{const db=r.result;const defs={chats:'chatKey',entities:['chatKey','entityId'],storages:['chatKey','storageId'],items:['chatKey','itemId'],events:['chatKey','eventId'],processed:['chatKey','messageKey']};for(const [n,k] of Object.entries(defs))if(!db.objectStoreNames.contains(n)){const st=db.createObjectStore(n,{keyPath:k});if(n!=='chats')st.createIndex('byChat','chatKey',{unique:false});}};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});return invDbPromise;}
-        function invOp(store,mode,fn){return invOpenDb().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction(store,mode),st=tx.objectStore(store);let result,rv;try{result=fn(st);if(result&&typeof result==='object'&&'onsuccess'in result){result.onsuccess=()=>rv=result.result;result.onerror=()=>reject(result.error);}}catch(e){reject(e);return;}tx.oncomplete=()=>resolve(rv!==undefined?rv:result);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||Error('Transaction aborted'));}));}
+        function invOpenDb(){ if(invDbPromise)return invDbPromise; invDbPromise=new Promise((resolve,reject)=>{const r=indexedDB.open(INV_DB,INV_VERSION);r.onupgradeneeded=()=>{const db=r.result,tx=r.transaction;const defs={chats:'chatKey',entities:['chatKey','entityId'],storages:['chatKey','storageId'],items:['chatKey','itemId'],events:['chatKey','eventId'],processed:['chatKey','messageKey']};for(const [n,k] of Object.entries(defs)){const st=db.objectStoreNames.contains(n)?tx.objectStore(n):db.createObjectStore(n,{keyPath:k});if(n!=='chats'&&!st.indexNames.contains('byChat'))st.createIndex('byChat','chatKey',{unique:false});}};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});return invDbPromise;}
+        function invOp(store,mode,fn){return invOpenDb().then(db=>new Promise((resolve,reject)=>{
+            let tx,requestResult,requestValue,requestSeen=false,settled=false;
+            const finish=(ok,value)=>{if(settled)return;settled=true;ok?resolve(value):reject(value);};
+            try{tx=db.transaction(store,mode);const st=tx.objectStore(store);requestResult=fn(st);
+                if(requestResult&&typeof requestResult==='object'&&typeof requestResult.addEventListener==='function'&&('onsuccess' in requestResult)){
+                    requestResult.addEventListener('success',()=>{requestValue=requestResult.result;requestSeen=true;});
+                    requestResult.addEventListener('error',()=>finish(false,requestResult.error||Error('IndexedDB request failed')));
+                }
+            }catch(e){finish(false,e);return;}
+            tx.addEventListener('complete',()=>finish(true,requestSeen?requestValue:requestResult));
+            tx.addEventListener('error',()=>finish(false,tx.error||Error('IndexedDB transaction failed')));
+            tx.addEventListener('abort',()=>finish(false,tx.error||Error('IndexedDB transaction aborted')));
+        }));}
         const invAll=(store,key)=>invOp(store,'readonly',st=>st.index('byChat').getAll(key));
         async function invLog(key,action,payload){await invOp('events','readwrite',st=>st.put({chatKey:key,eventId:invUid('event'),action,payload,timestamp:new Date().toISOString()}));}
         function invOwners(state){const active=getActiveNames();const user=ensureEntity(state,active.userName,'user');const main=ensureEntity(state,active.mainName,'main_character');const arr=[];for(const e of Object.values(state.entities||{})){if(!e?.id||!e?.name)continue;arr.push({id:e.id,name:e.name,type:e.type||'npc',aliases:e.aliases||[]});}return arr;}
@@ -1585,12 +1604,126 @@ ${body}
             for(const a of block.actions){if(a.type==='create_entity'){const name=cleanName(a.name);if(!name)throw Error('NPC name required');const entity=ensureEntity(state,name,'npc',a.alias?[a.alias]:[]);await saveState(false);updateSystemInjection();if(!owners.some(o=>o.id===entity.id))owners.push({id:entity.id,name:entity.name,type:entity.type,aliases:entity.aliases||[]});results.push({type:a.type,item:name,status:'success',message:`Registered ${name} in shared character registry`});continue;}if(!['add','remove','consume','transfer'].includes(a.type))throw Error('Unsupported inventory action');const item=String(a.item||'').trim();if(!item)throw Error('Item name required');const qty=Math.max(1,Math.floor(Number(a.quantity)||1));const from=ownerId(a.owner),to=a.type==='transfer'?ownerId(a.toOwner):'';if(a.type==='add'){await invAddItem(key,item,qty,from,String(a.description||'').slice(0,500));results.push({type:a.type,item,status:'success',message:`Added ${item} ×${qty} to ${owners.find(o=>o.id===from)?.name||'unassigned'}`});continue;}
                 const rows=(await invAll('items',key)).filter(i=>norm(i.name)===norm(item)&&i.ownerId===from);const total=rows.reduce((n,i)=>n+i.quantity,0);if(total<qty)throw Error(`Not enough ${item} for ${owners.find(o=>o.id===from)?.name||'unassigned'} (${total}/${qty})`);let remaining=qty;for(const row of rows){const take=Math.min(remaining,row.quantity);remaining-=take;if(a.type==='transfer'){if(take===row.quantity){row.ownerId=to;await invOp('items','readwrite',st=>st.put(row));}else{row.quantity-=take;await invOp('items','readwrite',st=>st.put(row));await invAddItem(key,row.name,take,to,row.description);}}else{row.quantity-=take;if(row.quantity<=0)await invOp('items','readwrite',st=>st.delete([key,row.itemId]));else await invOp('items','readwrite',st=>st.put(row));}if(remaining<=0)break;}await invLog(key,a.type,{item,quantity:qty,owner:from,toOwner:to,status:'success',message:`${a.type} ${item} ×${qty}`});results.push({type:a.type,item,status:'success',message:`${a.type} ${item} ×${qty}`});}
             await invOp('processed','readwrite',st=>st.put({chatKey:key,messageKey:msgKey,processedAt:new Date().toISOString()}));return {status:'applied',results};}
-        function invRender(content,state){const key=invKey();const details=document.createElement('details');details.className='dr-collapsible dr-inventory';details.open=false;const summary=document.createElement('summary');summary.textContent=`Inventory Module · ${invSettings().enabled?'ON':'OFF'}`;details.append(summary);const body=document.createElement('div');body.className='dr-inventory-content';body.innerHTML=`<div class="dr-inv-toolbar"><button type="button" class="menu_button" data-inv="refresh">Refresh</button><button type="button" class="menu_button" data-inv="backup">Backup</button><label class="menu_button">Restore<input data-inv="restore" type="file" accept=".json" hidden></label><label class="dr-setting"><input data-inv="enabled" type="checkbox" ${invSettings().enabled?'checked':''}> Enable Inventory module (AI tracking)</label><label class="dr-setting"><input data-inv="auto" type="checkbox" ${invSettings().autoApply?'checked':''}> Auto-apply AI changes</label></div><p class="dr-muted" data-inv="status">Shared character registry · separate item database</p><details class="dr-inv-diagnostic"><summary>AI pipeline diagnostics</summary><p data-inv="diag">Module ready; waiting for next assistant message.</p></details><div data-inv="items"></div><details class="dr-inv-add" open><summary>Add item</summary><div class="dr-inv-form"><input data-inv="name" placeholder="Item name"><input data-inv="qty" type="number" min="1" value="1"><select data-inv="owner"></select><input data-inv="desc" placeholder="Description"><button type="button" class="menu_button" data-inv="add">Add</button></div></details><p class="dr-muted">AI inventory tracking is experimental. Backup regularly.</p>`;details.append(body);content.append(details);invRoot=details;
-            const q=s=>body.querySelector(`[data-inv="${s}"]`);const saveCheckbox=(name,field)=>q(name).addEventListener('change',()=>{invSettings()[field]=q(name).checked;invSaveSettings();updateSystemInjection();renderPanel();});saveCheckbox('enabled','enabled');q('auto').addEventListener('change',()=>{invSettings().autoApply=q('auto').checked;invSaveSettings();});q('refresh').addEventListener('click',()=>renderPanel());q('backup').addEventListener('click',()=>invBackup(key,state).catch(e=>q('status').textContent=e.message));q('restore').addEventListener('change',async()=>{if(q('restore').files[0])try{await invRestore(key,q('restore').files[0]);renderPanel();q('status').textContent='Backup restored.';}catch(e){q('status').textContent='Restore failed: '+e.message;}});q('add').addEventListener('click',async()=>{if(!key)return q('status').textContent='Open a chat first';if(!q('name').value.trim())return q('status').textContent='Item name required';try{await invAddItem(key,q('name').value,q('qty').value,q('owner').value,q('desc').value);renderPanel();}catch(e){q('status').textContent=e.message;}});
-            if(!invSettings().enabled)q('status').textContent='AI tracking disabled. Manual inventory controls remain available.';invGetState(key,state).then(data=>{if(!invRoot||!invRoot.isConnected)return;const owner=q('owner');owner.innerHTML='<option value="">Unassigned</option>'+data.owners.map(o=>`<option value="${invEscape(o.id)}">${invEscape(o.name)} (${invEscape(o.type)})</option>`).join('');q('status').textContent=`Shared character registry · ${data.owners.length} owner(s) · separate item database${data.owners.length?': '+data.owners.map(o=>o.name).join(', '):' — no owners detected'}`;const itemsBox=q('items');const cards=data.owners.map(o=>{const list=data.items.filter(i=>i.ownerId===o.id);return `<section class="dr-inv-owner"><strong>${invEscape(o.name)} · Inventory</strong><ul>${list.length?list.map(i=>`<li><span><b>${invEscape(i.name)} ×${i.quantity}</b>${i.description?`<small>${invEscape(i.description)}</small>`:''}</span><button class="menu_button" data-del="${invEscape(i.itemId)}" type="button">×</button></li>`).join(''):'<li class="dr-inv-empty">Empty inventory</li>'}</ul></section>`;}).join('');const unassigned=data.items.filter(i=>!i.ownerId);const unc=unassigned.length?`<section class="dr-inv-owner"><strong>Unassigned</strong><ul>${unassigned.map(i=>`<li><span>${invEscape(i.name)} ×${i.quantity}</span><button class="menu_button" data-del="${invEscape(i.itemId)}">×</button></li>`).join('')}</ul></section>`:'';const logs=data.events.slice(0,35).map(e=>`<li><span><b>${invEscape(e.action)}</b><small>${invEscape(e.payload?.message||e.payload?.item||JSON.stringify(e.payload||{}))}</small><small>${new Date(e.timestamp).toLocaleString()}</small></span></li>`).join('');itemsBox.innerHTML=`<div class="dr-inv-section"><strong>Owners from Dynamic Relationships (${data.owners.length})</strong>${cards}${unc}</div><details class="dr-inv-section"><summary>Activity log</summary><ul>${logs||'<li class="dr-inv-empty">No events yet</li>'}</ul></details>`;itemsBox.querySelectorAll('[data-del]').forEach(btn=>btn.onclick=async()=>{if(!confirm('Delete this item?'))return;await invDelete(key,btn.dataset.del);renderPanel();});}).catch(e=>q('status').textContent='Inventory load error: '+e.message);
+        function invRender(content, state) {
+            const key = invKey();
+            const details = document.createElement('details');
+            details.className = 'dr-collapsible dr-inventory';
+            details.open = false;
+            const summary = document.createElement('summary');
+            summary.textContent = `Inventory Module · ${invSettings().enabled ? 'ON' : 'OFF'}`;
+            details.append(summary);
+            const body = document.createElement('div');
+            body.className = 'dr-inventory-content';
+            body.innerHTML = `<div class="dr-inv-toolbar"><button type="button" class="menu_button" data-inv="refresh">Refresh</button><button type="button" class="menu_button" data-inv="backup">Backup</button><label class="menu_button">Restore<input data-inv="restore" type="file" accept=".json" hidden></label><label class="dr-setting"><input data-inv="enabled" type="checkbox" ${invSettings().enabled ? 'checked' : ''}> Enable Inventory module (AI tracking)</label><label class="dr-setting"><input data-inv="auto" type="checkbox" ${invSettings().autoApply ? 'checked' : ''}> Auto-apply AI changes</label></div><p class="dr-muted" data-inv="status">Loading shared character registry…</p><details class="dr-inv-diagnostic"><summary>AI pipeline diagnostics</summary><p data-inv="diag">IndexedDB: opening and reading owners…</p></details><div data-inv="items"></div><details class="dr-inv-add" open><summary>Add item</summary><div class="dr-inv-form"><input data-inv="name" placeholder="Item name"><input data-inv="qty" type="number" min="1" value="1"><select data-inv="owner"></select><input data-inv="desc" placeholder="Description"><button type="button" class="menu_button" data-inv="add">Add</button></div></details><p class="dr-muted">AI inventory tracking is experimental. Backup regularly.</p>`;
+            details.append(body);
+            content.append(details);
+            invRoot = details;
+            const q = selector => body.querySelector(`[data-inv="${selector}"]`);
+            const setStatus = (message) => { if (q('status')) q('status').textContent = message; };
+            const setDiag = (message) => { if (q('diag')) q('diag').textContent = message; };
+            q('enabled').addEventListener('change', () => {
+                invSettings().enabled = q('enabled').checked;
+                invSaveSettings();
+                updateSystemInjection();
+                renderPanel();
+            });
+            q('auto').addEventListener('change', () => {
+                invSettings().autoApply = q('auto').checked;
+                invSaveSettings();
+            });
+            q('refresh').addEventListener('click', () => renderPanel());
+            q('backup').addEventListener('click', () => invBackup(key, state).catch(e => setStatus('Backup failed: ' + e.message)));
+            q('restore').addEventListener('change', async () => {
+                if (!q('restore').files[0]) return;
+                try { await invRestore(key, q('restore').files[0]); renderPanel(); setStatus('Backup restored.'); }
+                catch (e) { setStatus('Restore failed: ' + e.message); }
+            });
+            q('add').addEventListener('click', async () => {
+                if (!key) return setStatus('Open a chat first.');
+                if (!q('name').value.trim()) return setStatus('Item name required.');
+                try { await invAddItem(key, q('name').value, q('qty').value, q('owner').value, q('desc').value); renderPanel(); }
+                catch (e) { setStatus('Add failed: ' + e.message); }
+            });
+            if (!key) {
+                setStatus('Open a chat to load owners and inventories.');
+                setDiag('No active chat key.');
+                return updateSystemInjection();
+            }
+            if (!invSettings().enabled) setStatus('AI tracking disabled. Manual inventory controls remain available.');
+            invGetState(key, state).then(data => {
+                if (!invRoot || !invRoot.isConnected) return;
+                q('owner').innerHTML = '<option value="">Unassigned</option>' + data.owners.map(o => `<option value="${invEscape(o.id)}">${invEscape(o.name)} (${invEscape(o.type)})</option>`).join('');
+                setStatus(`Shared character registry · ${data.owners.length} owner(s) · separate item database${data.owners.length ? ': ' + data.owners.map(o => o.name).join(', ') : ' — no owners detected'}`);
+                setDiag(`Registry/database loaded successfully. Owners found: ${data.owners.length}.`);
+                const cards = data.owners.map(o => {
+                    const list = data.items.filter(i => i.ownerId === o.id);
+                    return `<section class="dr-inv-owner"><strong>${invEscape(o.name)} · Inventory</strong><ul>${list.length ? list.map(i => `<li><span><b>${invEscape(i.name)} ×${i.quantity}</b>${i.description ? `<small>${invEscape(i.description)}</small>` : ''}</span><button class="menu_button" data-del="${invEscape(i.itemId)}" type="button">×</button></li>`).join('') : '<li class="dr-inv-empty">Empty inventory</li>'}</ul></section>`;
+                }).join('');
+                const unassigned = data.items.filter(i => !i.ownerId);
+                const unassignedHtml = unassigned.length ? `<section class="dr-inv-owner"><strong>Unassigned</strong><ul>${unassigned.map(i => `<li><span>${invEscape(i.name)} ×${i.quantity}</span><button class="menu_button" data-del="${invEscape(i.itemId)}" type="button">×</button></li>`).join('')}</ul></section>` : '';
+                const logs = data.events.slice(0, 35).map(e => `<li><span><b>${invEscape(e.action)}</b><small>${invEscape(e.payload?.message || e.payload?.item || JSON.stringify(e.payload || {}))}</small><small>${new Date(e.timestamp).toLocaleString()}</small></span></li>`).join('');
+                q('items').innerHTML = `<div class="dr-inv-section"><strong>Owners from Dynamic Relationships (${data.owners.length})</strong>${cards}${unassignedHtml}</div><details class="dr-inv-section"><summary>Activity log</summary><ul>${logs || '<li class="dr-inv-empty">No events yet</li>'}</ul></details>`;
+                q('items').querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => {
+                    if (!confirm('Delete this item?')) return;
+                    try { await invDelete(key, btn.dataset.del); renderPanel(); }
+                    catch (e) { setStatus('Delete failed: ' + e.message); }
+                });
+            }).catch(e => {
+                setStatus('Inventory load error: ' + e.message);
+                setDiag('IndexedDB/registry load failed: ' + e.message);
+                console.error('[DR Inventory] owner load failed', e);
+            });
             updateSystemInjection();
         }
-        async function invMessageReceived(messageId){if(!invSettings().enabled||invBusy)return;const key=invKey();if(!key)return;invBusy=true;try{const chat=getContext()?.chat||[];const diag=()=>invRoot?.isConnected?invRoot.querySelector('[data-inv="diag"]'):null;const status=()=>invRoot?.isConnected?invRoot.querySelector('[data-inv="status"]'):null;const d=diag();if(d)d.textContent=`MESSAGE_RECEIVED received (message id: ${messageId}); scanning recent assistant messages…`;let chosen=null,text='';for(let retry=0;retry<6&&!chosen;retry++){const candidates=[];if(Number.isInteger(messageId)&&chat[messageId])candidates.push(chat[messageId]);for(let i=chat.length-1;i>=Math.max(0,chat.length-5);i--){const m=chat[i];if(m&&!m.is_user&&m.role!=='user'&&(m.mes||m.message||m.content)&&!candidates.includes(m))candidates.push(m);}for(const m of candidates){if(m?.is_user||m?.role==='user')continue;const t=m.mes||m.message||m.content||'';if(String(t).includes('INVENTORY_ACTIONS')){chosen=m;text=String(t);break;}}if(!chosen&&retry<5)await new Promise(r=>setTimeout(r,200));}const state=getState();if(!chosen){await invLog(key,'ai_action_none',{status:'none',message:'No INVENTORY_ACTIONS block detected after retry window',messageId});if(d)d.textContent=`Message received (id ${messageId}); no INVENTORY_ACTIONS block found in the last assistant messages.`;if(status)status.textContent='Inventory prompt is active; no action block found in this response. Owners should still be listed below.';return;}const msgKey=String(chosen.mesId||chosen.id||chosen.send_date||`${chat.indexOf(chosen)}_${text.slice(0,90)}`);const result=await invProcess(key,msgKey,text,state);if(d)d.textContent=result.status==='applied'?`Applied ${result.results.length} action(s).`: `Action block detected; processing status: ${result.status}.`;if(status)status.textContent=d?.textContent||'';renderPanel();}catch(e){console.warn('[DR Inventory] response handler',e);if(invRoot?.isConnected){const d=invRoot.querySelector('[data-inv="diag"]');if(d)d.textContent='Error: '+e.message;}}finally{invBusy=false;}}
+        async function invMessageReceived(eventArg) {
+            if (!invSettings().enabled || invBusy) return;
+            const key = invKey();
+            if (!key) return;
+            invBusy = true;
+            try {
+                const chat = getContext()?.chat || [];
+                const messageId = typeof eventArg === 'number' ? eventArg : (eventArg?.messageId ?? eventArg?.id ?? eventArg?.mesId ?? 'event');
+                const diag = () => invRoot?.isConnected ? invRoot.querySelector('[data-inv="diag"]') : null;
+                const status = () => invRoot?.isConnected ? invRoot.querySelector('[data-inv="status"]') : null;
+                const d = diag();
+                if (d) d.textContent = `MESSAGE_RECEIVED received (message id: ${messageId}); scanning recent assistant messages…`;
+                let chosen = null, text = '';
+                for (let retry = 0; retry < 6 && !chosen; retry++) {
+                    const candidates = [];
+                    const supplied = eventArg && typeof eventArg === 'object' ? (eventArg.message || eventArg.mes || eventArg) : null;
+                    if (supplied && typeof supplied === 'object' && !supplied.is_user && supplied.role !== 'user') candidates.push(supplied);
+                    if (Number.isInteger(messageId) && chat[messageId]) candidates.push(chat[messageId]);
+                    for (let i = chat.length - 1; i >= Math.max(0, chat.length - 5); i--) {
+                        const m = chat[i];
+                        if (m && !m.is_user && m.role !== 'user' && (m.mes || m.message || m.content) && !candidates.includes(m)) candidates.push(m);
+                    }
+                    for (const m of candidates) {
+                        if (m?.is_user || m?.role === 'user') continue;
+                        const t = m.mes || m.message || m.content || '';
+                        if (String(t).includes('INVENTORY_ACTIONS')) { chosen = m; text = String(t); break; }
+                    }
+                    if (!chosen && retry < 5) await new Promise(r => setTimeout(r, 200));
+                }
+                const state = getState();
+                if (!chosen) {
+                    if (d) d.textContent = `Message received (id ${messageId}); scan complete. No INVENTORY_ACTIONS block found in the recent assistant messages.`;
+                    if (status) status.textContent = 'Response scan completed; no inventory action block was returned.';
+                    await invLog(key, 'ai_action_none', { status: 'none', message: 'No INVENTORY_ACTIONS block detected after retry window', messageId });
+                    return;
+                }
+                const msgKey = String(chosen.mesId || chosen.id || chosen.send_date || `${chat.indexOf(chosen)}_${text.slice(0, 90)}`);
+                const result = await invProcess(key, msgKey, text, state);
+                if (d) d.textContent = result.status === 'applied' ? `Applied ${result.results.length} action(s).` : `Action block detected; processing status: ${result.status}.`;
+                if (status) status.textContent = d?.textContent || '';
+                renderPanel();
+            } catch (e) {
+                console.warn('[DR Inventory] response handler', e);
+                if (invRoot?.isConnected) {
+                    const d = invRoot.querySelector('[data-inv="diag"]');
+                    if (d) d.textContent = 'Error: ' + e.message;
+                }
+            } finally { invBusy = false; }
+        }
         function invBind(){const ctx=getContext();if(!ctx?.eventSource||!ctx?.event_types)return;const ev=ctx.event_types;if(ev.MESSAGE_RECEIVED)ctx.eventSource.on(ev.MESSAGE_RECEIVED,evMsg=>invMessageReceived(evMsg));}
         window.DynamicRelationshipsInventory={render:invRender,promptText:invPrompt,isEnabled:()=>!!invSettings().enabled};invBind();updateSystemInjection();renderPanel();
     })();
