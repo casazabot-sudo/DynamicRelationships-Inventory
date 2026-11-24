@@ -1,4 +1,4 @@
-/* Dynamic Relationships 0.8.14
+/* Dynamic Relationships 0.8.15
  * Chat-scoped relationship database + generated lorebook projection
  * + scene, character & thought tracking + context history stripping.
  */
@@ -10,7 +10,7 @@
     const LEGACY_KEY = 'dynamic_relationships_v1';
     const ROOT_ID = 'dynamic-relationships-extension';
     const MACRO_NAME = 'dr_relationships';
-    const VERSION = '0.8.14';
+    const VERSION = '0.8.15';
     const METRICS = ['trust', 'affection', 'respect', 'attachment', 'attraction', 'fear', 'jealousy', 'irritation', 'admiration'];
     const LABELS = {
         trust: 'Доверие', affection: 'Симпатия', respect: 'Уважение',
@@ -45,11 +45,13 @@
     // Tolerant parsing: allow emoji variants, missing emojis and minor label changes.
     const SCENE_BLOCK_RE = /---\s*✧\s*ТЕКУЩИЙ\s*СЕТТИНГ\s*✧\s*---\s*([\s\S]*?)(?=\n\s*---\s*✧|$)/iu;
     const CHAR_BLOCK_RE = /---\s*✧\s*(?:🌸\s*)?ЗАМЕЧ(?:АН|ЕН)\s*ПЕРСОНАЖ\s*✧\s*---\s*([\s\S]*?)(?=\n\s*---\s*✧|$)/iu;
-    const THOUGHT_BLOCK_RE = /---\s*✧\s*(?:💭\s*)?ТАЙНЫЕ\s*МЫСЛИ\s*✧\s*---\s*([\s\S]*?)(?=\n\s*---\s*✧|$)/iu;
+    // Tolerant thought-section detection: accept the canonical marker, emoji variants,
+    // Markdown headings, bold labels, and plain 'Тайные мысли' headings.
+    const THOUGHT_BLOCK_RE = /(?:---\s*✧\s*(?:[💭🧠🤔]\s*)?ТАЙНЫЕ\s*МЫСЛИ\s*✧\s*---|^\s{0,3}#{1,6}\s*ТАЙНЫЕ\s*МЫСЛИ\s*:?|^\s*\*{1,2}_?ТАЙНЫЕ\s*МЫСЛИ_?\*{1,2}\s*:?)\s*([\s\S]*?)(?=\n\s*(?:---\s*✧|#{1,6}\s|\*{1,2}_?ТАЙНЫЕ\s*МЫСЛИ)|$)/imu;
 
     const STRIP_SCENE_RE = /---\s*✧\s*ТЕКУЩИЙ\s*СЕТТИНГ\s*✧\s*---[\s\S]*?(?=(?:\n\s*---\s*✧)|$)/giu;
     const STRIP_CHAR_RE = /---\s*✧\s*(?:🌸\s*)?ЗАМЕЧ(?:АН|ЕН)\s*ПЕРСОНАЖ\s*✧\s*---[\s\S]*?(?=(?:\n\s*---\s*✧)|$)/giu;
-    const STRIP_THOUGHT_RE = /---\s*✧\s*(?:💭\s*)?ТАЙНЫЕ\s*МЫСЛИ\s*✧\s*---[\s\S]*?(?=(?:\n\s*---\s*✧)|$)/giu;
+    const STRIP_THOUGHT_RE = /(?:---\s*✧\s*(?:[💭🧠🤔]\s*)?ТАЙНЫЕ\s*МЫСЛИ\s*✧\s*---|^\s{0,3}#{1,6}\s*ТАЙНЫЕ\s*МЫСЛИ\s*:?|^\s*\*{1,2}_?ТАЙНЫЕ\s*МЫСЛИ_?\*{1,2}\s*:?)\s*[\s\S]*?(?=(?:\n\s*---\s*✧|\n\s*#{1,6}\s|\n\s*\*{1,2}_?ТАЙНЫЕ\s*МЫСЛИ)|$)/gimu;
 
     let busy = false;
     let registered = false;
@@ -455,9 +457,10 @@
         for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed) continue;
-            const colon = trimmed.match(/^([^:：]{1,80})[:：]\s*(.*)$/);
-            const standalone = !colon && knownNames.has(norm(trimmed)) ? { name: trimmed, text: '' } : null;
-            const speaker = colon ? { name: colon[1], text: colon[2] } : standalone;
+            const normalizedLine = trimmed.replace(/^[-*•]+\s*/, '').replace(/\*{1,2}|_+/g, '').trim();
+            const colon = normalizedLine.match(/^([^:：—–-]{1,80})\s*[:：—–-]\s*(.*)$/);
+            const standalone = !colon && knownNames.has(norm(normalizedLine)) ? { name: normalizedLine, text: '' } : null;
+            const speaker = colon ? { name: colon[1].trim(), text: colon[2] } : standalone;
             if (speaker) {
                 if (currentThought) thoughts.push(currentThought);
                 currentThought = { name: cleanName(speaker.name), text: cleanText(speaker.text) };
