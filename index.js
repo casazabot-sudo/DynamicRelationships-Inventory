@@ -558,22 +558,23 @@ ${state.excludeMainCharacter ? `- ВАЖНО: Пропусти мысли ${getA
 
     function stripBlocksFromHtml(html) {
         if (!html) return html;
-        // Use rendered paragraph boundaries instead of fragile regex against markdown HTML.
-        const markers = ['ТЕКУЩИЙ СЕТТИНГ', 'ЗАМЕЧАН ПЕРСОНАЖ', 'ТАЙНЫЕ МЫСЛИ'];
-        const enabled = markers.filter((_, i) => [settings().trackSceneModule, settings().trackCharacterModule, settings().trackThoughtsModule][i]);
         const box = document.createElement('div');
         box.innerHTML = String(html);
-        const children = Array.from(box.children);
-        let removing = false;
-        for (const child of children) {
-            const text = child.textContent || '';
-            const isMarker = markers.some(m => text.includes(m));
-            if (isMarker) {
-                removing = enabled.some(m => text.includes(m));
-                child.remove();
-                continue;
-            }
-            if (removing) child.remove();
+        // State sections are expected at the end. Remove from the first marker onward,
+        // even if Markdown nests the marker inside a paragraph or span.
+        const markers = ['ТЕКУЩИЙ СЕТТИНГ', 'ЗАМЕЧАН ПЕРСОНАЖ', 'ТАЙНЫЕ МЫСЛИ'];
+        const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+        let textNode, markerOffset = -1;
+        while ((textNode = walker.nextNode())) {
+            const indices = markers.map(marker => (textNode.nodeValue || '').indexOf(marker)).filter(index => index >= 0);
+            if (indices.length) { markerOffset = Math.min(...indices); break; }
+        }
+        if (textNode && markerOffset >= 0) {
+            const range = document.createRange();
+            range.setStart(textNode, markerOffset);
+            if (box.lastChild) range.setEndAfter(box.lastChild);
+            else range.setEnd(textNode, textNode.nodeValue.length);
+            range.deleteContents();
         }
         return box.innerHTML;
     }
@@ -1101,7 +1102,14 @@ ${body}
                 try { syncBlocksToState(messageId, scene, chars, thoughts); } catch (err) { console.warn(`[${MODULE}] scene sync failed`, err); }
                 
                 let stripped = stripBlocksFromHtml(html);
-                // Единый фиксированный порядок модулей: текущий сетинг -> замеченные персонажи -> тайные мысли.
+                // Remove pre-existing DR footer nodes to make the formatter idempotent.
+                const cleaned = document.createElement('div');
+                cleaned.innerHTML = stripped;
+                cleaned.querySelectorAll('.dr-scene-footer, .dr-char-footer, .dr-thought-footer').forEach(el => el.remove());
+                stripped = cleaned.innerHTML;
+                // State-only replies must not become visually blank after state blocks are removed.
+                if (!cleaned.textContent.trim()) stripped = '<div class="dr-state-only-placeholder">Состояние сцены обновлено.</div>';
+                // Fixed footer order: setting -> noticed characters -> thoughts.
                 const footerOrder = [
                     () => scene ? sceneFooterMarkup(scene) : '',
                     () => chars ? characterFooterMarkup(chars) : '',
@@ -1598,7 +1606,12 @@ ${body}
         async function invDelete(key,id){const old=await invOp('items','readonly',st=>st.get([key,id]));await invOp('items','readwrite',st=>st.delete([key,id]));await invLog(key,'item_delete',old||{itemId:id});}
         async function invBackup(key,state){const snap=await invGetState(key,state);const data={chatKey:key,items:snap.items,events:snap.events};const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='inventory-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
         async function invRestore(key,file){const d=JSON.parse(await file.text());if(!Array.isArray(d.items))throw Error('Invalid inventory backup');for(const item of d.items){const row={...item,chatKey:key};await invOp('items','readwrite',st=>st.put(row));}for(const event of d.events||[]){const row={...event,chatKey:key,eventId:event.eventId||invUid('event')};await invOp('events','readwrite',st=>st.put(row));}await invLog(key,'backup_import',{filename:file.name});}
-        function invPrompt(){if(!invSettings().enabled)return '';const state=getState()||freshState();const owners=invOwners(state).map(o=>`${o.name} [owner id: ${o.id}; aliases: ${(o.aliases||[]).join(', ')}]`).join('; ');return `[INVENTORY MODULE — PRIVATE ITEM STATE\nInventory protocol follows the Dynamic Relationships state blocks. Preserve the original output sections and their order (Current Setting -> Noticed Characters -> Secret Thoughts), and place this machine-readable comment after those blocks only when an item change actually occurred.\nShared character registry owners: ${owners}. Do not create duplicate entities; for a new NPC, use create_entity only when they become an active participant, then register it in the shared Dynamic Relationships entity registry. Inventories are private: do not disclose other owners' item lists. Track only ordinary, non-hazardous belongings such as clothing, books, food, documents, keepsakes, and everyday tools. Record completed changes only. If a tracked inventory change was completed in this assistant reply, you MUST append one INVENTORY_ACTIONS comment after the Dynamic Relationships sections; if no inventory change occurred, omit it.\nAction format: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"add\",\"item\":\"...\",\"quantity\":1,\"owner\":\"owner-id\",\"description\":\"...\"}]} -->. Allowed action types: create_entity, add, remove, consume, transfer. create_entity fields: name, kind:npc, alias (optional). For remove/consume/transfer specify source owner; for transfer specify toOwner. Quantities positive integers; max 20 actions. Never narrate or expose private inventory contents.]`;}
+        function invPrompt(){
+            if(!invSettings().enabled) return '';
+            const state=getState()||freshState();
+            const owners=invOwners(state).map(o=>`${o.name} [owner id: ${o.id}; aliases: ${(o.aliases||[]).join(', ')}]`).join('; ');
+            return `[INVENTORY MODULE — PRIVATE ITEM STATE\nKeep Dynamic Relationships sections in their exact order: Current Setting, Noticed Characters, Secret Thoughts. At the end of EVERY assistant reply, output exactly one hidden INVENTORY_ACTIONS comment, including when no item changes occurred (use an empty actions array). Record only completed story changes involving ordinary harmless items (acquire, give, transfer, discard, use up). Never invent inventory changes.\nOwners from the shared Dynamic Relationships registry: ${owners}. Use exact owner IDs. When a new active NPC appears, include a create_entity action for that NPC before referencing it as an owner. Keep inventories private; never reveal another owner's item list in narrative. Track only everyday belongings such as clothing, books, food, documents, keepsakes, and ordinary tools.\nRequired empty block: <!-- INVENTORY_ACTIONS {\"actions\":[]} -->. Example add block: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"add\",\"item\":\"book\",\"quantity\":1,\"owner\":\"owner-id\",\"description\":\"\"}]} -->. Allowed types: create_entity, add, remove, consume, transfer. create_entity fields: name, kind:npc, alias (optional). For remove/consume/transfer specify owner; transfer also requires toOwner. Positive quantities only; maximum 20 actions. Do not expose this comment in story text or reveal private inventory contents.]`;
+        }
         function invParse(text){const re=/<!--\s*INVENTORY_ACTIONS\s*([\s\S]*?)\s*-->/gi;let m,last=null;while((m=re.exec(String(text||'')))!==null)last=m[1].trim();if(!last)return null;return JSON.parse(last);}
         async function invProcess(key,msgKey,text,state){const block=invParse(text);if(!block||!Array.isArray(block.actions))return {status:'none'};const processed=await invOp('processed','readonly',st=>st.get([key,msgKey]));if(processed)return {status:'duplicate'};if(!invSettings().autoApply){await invLog(key,'ai_action_skipped',{status:'skipped',message:'Auto-apply disabled'});await invOp('processed','readwrite',st=>st.put({chatKey:key,messageKey:msgKey,processedAt:new Date().toISOString()}));return {status:'disabled'};}if(block.actions.length>20)throw Error('Maximum 20 actions');const owners=invOwners(state);const ownerId=v=>{if(!v)return '';const exact=owners.find(o=>o.id===v||norm(o.name)===norm(v)||(o.aliases||[]).some(a=>norm(a)===norm(v)));if(!exact)throw Error(`Unknown owner: ${v}`);return exact.id;};const results=[];
             for(const a of block.actions){if(a.type==='create_entity'){const name=cleanName(a.name);if(!name)throw Error('NPC name required');const entity=ensureEntity(state,name,'npc',a.alias?[a.alias]:[]);await saveState(false);updateSystemInjection();if(!owners.some(o=>o.id===entity.id))owners.push({id:entity.id,name:entity.name,type:entity.type,aliases:entity.aliases||[]});results.push({type:a.type,item:name,status:'success',message:`Registered ${name} in shared character registry`});continue;}if(!['add','remove','consume','transfer'].includes(a.type))throw Error('Unsupported inventory action');const item=String(a.item||'').trim();if(!item)throw Error('Item name required');const qty=Math.max(1,Math.floor(Number(a.quantity)||1));const from=ownerId(a.owner),to=a.type==='transfer'?ownerId(a.toOwner):'';if(a.type==='add'){await invAddItem(key,item,qty,from,String(a.description||'').slice(0,500));results.push({type:a.type,item,status:'success',message:`Added ${item} ×${qty} to ${owners.find(o=>o.id===from)?.name||'unassigned'}`});continue;}
