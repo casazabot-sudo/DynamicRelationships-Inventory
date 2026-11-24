@@ -1,4 +1,4 @@
-# Dynamic Relationships 0.8.11
+# Dynamic Relationships 0.8.12
 
 Dynamic Relationships is a SillyTavern extension for tracking character relationships and scene state. This build also includes a minimal per-character inventory module.
 
@@ -8,8 +8,8 @@ Dynamic Relationships is a SillyTavern extension for tracking character relation
 - Each item has only a name and quantity.
 - Manual add, quantity update, and delete operations are supported.
 - The activity journal records manual and AI changes, timestamps, owner, action, and quantity change.
-- AI inventory updates use an `INVENTORY_ACTIONS` comment block in assistant output; the formatter removes this protocol block from the rendered message. Replies with no inventory changes are also recorded in the journal as diagnostic entries.
-- Settings include inventory enable/disable and exclusion of the main character/Narrator from inventory tracking (enabled by default).
+- AI inventory updates use an `INVENTORY_ACTIONS` comment block in assistant output, including an empty actions list when nothing changed; the formatter removes the protocol block from the rendered message. Transfers are logged on both giver and receiver sides. Replies without a valid block are recorded diagnostically. User thoughts are filtered from the thoughts footer.
+- Settings include inventory enable/disable and exclusion of entities explicitly marked or named Narrator/Рассказчик from inventory tracking (enabled by default); active {{char}} is not excluded automatically.
 - When inventory tracking is disabled, data remains stored and AI inventory processing is skipped.
 
 ## Install

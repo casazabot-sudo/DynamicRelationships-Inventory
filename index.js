@@ -386,8 +386,10 @@
         }
         if (currentThought) thoughts.push(currentThought);
 
-        if (!thoughts.length) return null;
-        return { thoughts };
+        const userName = norm(getActiveNames().userName);
+        const filtered = thoughts.filter(t => norm(t.name) !== userName && norm(t.name) !== 'user' && norm(t.name) !== '{{user}}');
+        if (!filtered.length) return null;
+        return { thoughts: filtered };
     }
 
     function getCurrentScene() {
@@ -522,7 +524,7 @@ ${state.excludeMainCharacter ? `- ВАЖНО: Пропусти персонаж�
 Правила обновления мыслей:
 - Отражай текущие мысли персонажей в текущей сцене.
 - Скрытые мысли должны отличаться от произнесённого вслух.
-- Не выводи мысли {{user}}, если он не управляется ИИ.
+- НИКОГДА не выводи мысли {{user}} или ${getActiveNames().userName}; пользователь не управляется ИИ. Не добавляй его даже если он присутствует в сцене.
 ${state.excludeMainCharacter ? `- ВАЖНО: Пропусти мысли ${getActiveNames().mainName} (нейтральный рассказчик). Не добавляй его в список.` : ''}
 
 `;
@@ -535,7 +537,7 @@ ${state.excludeMainCharacter ? `- ВАЖНО: Пропусти мысли ${getA
                 const entries = (row.items || []).map(it => `${it.name} ×${it.quantity}`).join(', ') || 'пусто';
                 return `${owner}: ${entries}`;
             }).join('\n');
-            prompt += `\n[INVENTORY TRACKING — enabled]\n- Track only completed changes to items. Each item has only name and quantity.\n- Inventories are private per owner; never reveal another character's inventory or invent inventory contents.\n- For completed acquisition, loss, consumption, or quantity changes, append at the very end: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"add\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":1},{\"type\":\"remove\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":1},{\"type\":\"set\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":2}]} -->. No block when no inventory changes. Only report changes that actually happened in the scene, not plans.\n- Existing registered owners and current inventories (for continuity only; do not expose):\n${inventorySummary || 'No inventory records yet.'}\n${settings().excludeNarratorInventory ? `- EXCLUDE narrator/main character (${getActiveNames().mainName}) from inventory tracking. Do not add, remove, or change their inventory.\n` : ''}`;
+            prompt += `\n[INVENTORY TRACKING — enabled]\n- Track only completed changes to items. Each item has only name and quantity.\n- Inventories are private per owner; never reveal another character's inventory or invent inventory contents.\n- ALWAYS append exactly one machine-readable block at the very end of every reply, even when no inventory change occurred. Use actions:[] when nothing changed. Format: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"add\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":1},{\"type\":\"remove\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":1},{\"type\":\"set\",\"owner\":\"owner name\",\"item\":\"item name\",\"quantity\":2},{\"type\":\"transfer\",\"from\":\"giver\",\"to\":\"receiver\",\"item\":\"item name\",\"quantity\":1}]} -->. Track only changes that actually completed in the scene, not intentions. For transfer, record both sides atomically. Never report user/{{user}} as an owner action unless user explicitly manually edits inventory.\n- Existing registered owners and current inventories (for continuity only; do not expose):\n${inventorySummary || 'No inventory records yet.'}\n${settings().excludeNarratorInventory ? `- EXCLUDE only an entity explicitly marked or named Narrator/Рассказчик. Do not exclude {{char}} merely because it is the active SillyTavern character.\n` : ''}`;
         }
 
         prompt += `]`;
@@ -1465,6 +1467,12 @@ ${body}
         return state.inventory;
     }
 
+    function isNarratorEntity(entity) {
+        const role = norm(entity?.type || entity?.role || '');
+        const name = norm(entity?.name || '');
+        return role === 'narrator' || role.includes('narrator') || role.includes('рассказчик') || name === 'narrator' || name === 'рассказчик';
+    }
+
     function inventoryOwnerList(state) {
         const names = getActiveNames();
         const userId = idFor(names.userName) || 'user';
@@ -1472,11 +1480,11 @@ ${body}
         const owners = [{ id: userId, name: names.userName || 'User', type: 'user' }];
         for (const entity of Object.values(state.entities || {})) {
             if (!entity?.name) continue;
-            if (settings().excludeNarratorInventory && norm(entity.name) === norm(names.mainName)) continue;
+            if (settings().excludeNarratorInventory && isNarratorEntity(entity)) continue;
             if (owners.some(o => o.id === entity.id || norm(o.name) === norm(entity.name))) continue;
             owners.push({ id: entity.id || idFor(entity.name), name: entity.name, type: entity.type || 'npc' });
         }
-        if (!settings().excludeNarratorInventory && !owners.some(o => o.id === mainId)) owners.push({ id: mainId, name: names.mainName, type: 'main_character' });
+        if (!owners.some(o => o.id === mainId) && !settings().excludeNarratorInventory) owners.push({ id: mainId, name: names.mainName, type: 'main_character' });
         return owners;
     }
 
@@ -1493,7 +1501,7 @@ ${body}
         const active = getActiveNames();
         if (norm(clean) === norm(active.userName)) return { id: idFor(active.userName), name: active.userName, type: 'user' };
         const entity = findEntity(state, clean);
-        if (settings().excludeNarratorInventory && (norm(clean) === norm(active.mainName) || norm(entity?.name) === norm(active.mainName))) return null;
+        if (settings().excludeNarratorInventory && entity && isNarratorEntity(entity)) return null;
         if (entity) return { id: entity.id, name: entity.name, type: entity.type };
         // Unknown AI owners are deliberately not registered: DR remains the single character registry.
         return null;
@@ -1501,7 +1509,7 @@ ${body}
 
     function inventoryApply(state, action, source = 'AI') {
         const inv = inventoryState(state);
-        const owner = ensureInventoryOwner(state, action.owner || action.character || '');
+        const owner = ensureInventoryOwner(state, action.owner || action.character || action.from || '');
         if (!owner) return { status: 'skipped', reason: `Unknown owner or narrator excluded: ${action.owner || action.character || ''}` };
         const itemName = cleanName(action.item || action.name);
         const rawQuantity = Number(action.quantity);
@@ -1524,6 +1532,20 @@ ${body}
             if (existing.quantity <= 0) ownerRow.items = ownerRow.items.filter(i => i !== existing);
             inventoryLog(state, 'remove', owner.id, itemName, qty, source, { before, after: before - qty });
             return { status: 'success', owner: owner.name, item: itemName, before, after: before - qty };
+        }
+        if (type === 'transfer') {
+            const receiver = ensureInventoryOwner(state, action.to || action.receiver || '');
+            if (!receiver) return { status: 'error', reason: `Unknown transfer receiver: ${action.to || action.receiver || ''}` };
+            if (!existing || before < qty) return { status: 'error', reason: `Not enough ${itemName} in ${owner.name} to transfer (have ${before}, requested ${qty})` };
+            existing.quantity = before - qty;
+            if (existing.quantity <= 0) ownerRow.items = ownerRow.items.filter(i => i !== existing);
+            const receiverRow = inv.items[receiver.id] ??= { ownerId: receiver.id, ownerName: receiver.name, items: [] };
+            const receiverItem = receiverRow.items.find(i => norm(i.name) === norm(itemName));
+            const receiverBefore = receiverItem ? Number(receiverItem.quantity) || 0 : 0;
+            if (receiverItem) receiverItem.quantity = receiverBefore + qty; else receiverRow.items.push({ name: itemName, quantity: qty });
+            inventoryLog(state, 'remove', owner.id, itemName, qty, source, { before, after: before - qty, transferTo: receiver.name });
+            inventoryLog(state, 'add', receiver.id, itemName, qty, source, { before: receiverBefore, after: receiverBefore + qty, transferFrom: owner.name });
+            return { status: 'success', transfer: true, from: owner.name, to: receiver.name, item: itemName, quantity: qty };
         }
         if (type === 'set') {
             if (existing && qty === 0) ownerRow.items = ownerRow.items.filter(i => i !== existing);

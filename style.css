@@ -222,3 +222,10 @@
 }
 
 .dr-state-only-placeholder { opacity: 0.75; font-style: italic; padding: 0.25rem 0; }
+
+/* Narrow-screen footer spacing/alignment */
+@media (max-width: 520px) {
+  .dr-scene-footer, .dr-char-footer, .dr-thought-footer { box-sizing: border-box; width: 100%; margin-left: 0; margin-right: 0; padding: 0.55em 0.65em; }
+  .dr-scene-line { gap: 0.35em; }
+  .dr-scene-line > span:first-child { flex-basis: 1.2em; }
+}
