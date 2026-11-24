@@ -1,50 +1,18 @@
-## 0.5.0 — сеттинг через инъекцию в промпт и парсинг ответа
+# Dynamic Relationships + Inventory Module (v0.8.7)
 
-- Анализ сцены через отдельный `generateRaw()` удалён. Сцена больше не «выковыривается» постфактум — её выводит сама ролёвка в конце ответа по инструкции из `setExtensionPrompt`.
-- Перед каждой генерацией в контекст ставится системная инъекция с требованием вывести блок `--- ✧ ТЕКУЩИЙ СЕТТИНГ ✧ ---` с полями «Дата и Время», «Погода», «Локация» и с правилами обновления (переход времени, перемещение, смена погоды). В инъекции показывается предыдущее состояние сцены.
-- Готовое сообщение разбирается регуляркой `SCENE_BLOCK_RE`; текущим считается последнее сообщение с валидным блоком (`getCurrentScene()`).
-- Сырой блок вырезается из отрендеренного HTML (`stripSceneBlockFromHtml`) и заменяется стилизованным футером.
-- Сцена синхронизируется с `chatMetadata` (дебаунс 400 мс, без `renderPanel`), из неё строится Lorebook-проекция.
-- `MESSAGE_EDITED` / `MESSAGE_DELETED` / `MESSAGE_SWIPED` / `MESSAGE_UPDATED` пересчитывают инъекцию и планируют сохранение.
-- Тумблер сеттинга сразу снимает/ставит инъекцию и перерисовывает футеры.
-- `generateRaw` теперь занимается только отношениями; секция scene удалена из его промпта и из `applyAnalysis`.
+This is the original Dynamic Relationships extension (based on upstream v0.8.4 source) with an optional, integrated Inventory section. Inventory is rendered inside the Dynamic Relationships panel and uses the same chat-scoped `state.entities` registry. Item storage remains in a separate IndexedDB database for continuity with Inventory System v0.3.x.
 
-- ## 0.6.0 — отслеживание персонажей (статус, одежда, позиции)
+## Integration changes
+- Inventory panel is nested inside the Dynamic Relationships panel.
+- User and main character are ensured in the shared character registry; detected NPCs are shared.
+- Inventory instructions are appended to the existing Dynamic Relationships prompt under its existing prompt key; no competing Inventory extension prompt is registered.
+- The original state-output section order is explicitly preserved: Current Setting -> Noticed Characters -> Secret Thoughts. The inventory command comment is requested after these sections, only when an item change occurred.
+- No Inventory generation interceptor is registered.
+- Inventory module and auto-apply have separate toggles.
+- Existing item database stores are retained; owner IDs for legacy `user` and `char` are mapped to current shared registry IDs.
 
-- Добавлен новый модуль `trackCharacterModule`, выводящий блок «ЗАМЕЧАН ПЕРСОНАЖ».
-- Блок содержит: иконку пола, имя, роль, статус, описание одежды и пространственную позицию («Где мы»).
-- Работает по тому же принципу, что и сеттинг: инструкция внедряется в промпт, а ответ ИИ парсится и выводится в виде стилизованного HTML-футера под сообщением.
-- Если включена опция «Не отслеживать {{char}}», нейтральный рассказчик автоматически исключается из инструкций и финального списка.
-- Добавлен отдельный чекбокс в настройки панели расширения.
+## Install from GitHub
+Upload the contents of this folder to the root of a GitHub repository, then install using SillyTavern Extensions -> Install Extension -> Git URL.
 
-- ## 0.7.0 — вырезание истории и экономия контекста
-
-- Добавлена настройка **«Вырезать блоки из истории для ИИ»**.
-- Модуль перехватывает момент перед отправкой запроса к языковой модели. Если в предыдущих сообщениях есть сырые текстовые блоки `--- ✧ ТЕКУЩИЙ СЕТТИНГ ✧ ---` или `--- ✧ 🌸 ЗАМЕЧАН ПЕРСОНАЖ ✧ ---`, они временно вырезаются из памяти `ctx.chat`.
-- Настройка **«Оставлять в последних сообщениях»** позволяет указать, сколько последних сообщений сохранят блоки в контексте (по умолчанию `2`). Это дает ИИ возможность видеть динамику изменений (как статус менялся от сообщения к сообщению), не забивая весь контекст старыми данными. Значение `0` вырезает блоки полностью (ИИ будет опираться только на актуальный системный промпт).
-- После завершения генерации или при её отмене (`GENERATION_ENDED` / `GENERATION_STOPPED`) оригинальные сообщения в памяти мгновенно восстанавливаются. Файлы чата и UI не затрагиваются.
-
-
-## 0.8.3 — исправление Lorebook и режим хранения
-
-- Исправлен запрос списка World Info: `/api/worldinfo/list` вызывается методом POST с JSON-телом `{}`. В SillyTavern этот endpoint зарегистрирован как POST; прежний код отправлял GET, из-за чего список Lorebook не загружался.
-- Сохранено использование `file_id` как API-имени файла World Info. Это корректно: endpoint `/get` и `/edit` принимает имя файла без расширения, а `name` в списке может быть только отображаемым названием.
-- Добавлен выбор режима: «Только внутренняя база чата» или «Внутренняя база + Lorebook».
-- В режиме совместного хранения управляемая запись синхронизируется после анализа отношений, обновления блоков сцены/персонажей/мыслей, отмены последнего изменения и изменения настроек модулей.
-- Для старых чатов с уже выбранным Lorebook режим совместного хранения включается автоматически при миграции.
-- При отключённой синхронизации Lorebook не изменяется; внутренняя база продолжает работать как прежде.
-
-
-## Версия 0.8.4 — порядок блоков
-- Зафиксирован единый порядок отображения блоков: **Текущий сетинг → Замечен персонаж → Тайные мысли** в основном форматтере и резервном рендере.
-
-## Integrated Inventory Module (v0.8.5)
-
-Inventory is an optional nested section inside Dynamic Relationships. It shares the chat-scoped `state.entities` character registry and uses a separate IndexedDB store for items/events. It does not register a generation interceptor. Toggle Inventory in its own settings section; when disabled, its prompt is cleared and AI inventory parsing is skipped. This build is syntax/packaging checked; runtime SillyTavern testing remains required.
-
-
-# Optional integrated Inventory module (0.8.5)
-
-Inventory is a nested section inside Dynamic Relationships. It shares the chat-scoped `state.entities` character registry and stores items/events in the legacy Inventory IndexedDB database for compatibility. It does not register a generation interceptor. The module and auto-apply can be toggled independently. Newly seen NPCs can be added to the shared registry from the action block. Backup/restore and manual item controls remain available.
-
-Syntax and ZIP integrity checks are complete; this build still requires runtime testing in SillyTavern.
+## Testing status
+`node --check index.js` and ZIP integrity checks passed. This package has not been run inside SillyTavern. Please test with Inventory disabled first, then enabled, and verify the three original output sections remain in the assistant response.
