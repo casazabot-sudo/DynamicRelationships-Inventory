@@ -1,4 +1,4 @@
-/* Dynamic Relationships 0.8.3
+/* Dynamic Relationships 0.8.14
  * Chat-scoped relationship database + generated lorebook projection
  * + scene, character & thought tracking + context history stripping.
  */
@@ -10,7 +10,7 @@
     const LEGACY_KEY = 'dynamic_relationships_v1';
     const ROOT_ID = 'dynamic-relationships-extension';
     const MACRO_NAME = 'dr_relationships';
-    const VERSION = '0.8.13';
+    const VERSION = '0.8.14';
     const METRICS = ['trust', 'affection', 'respect', 'attachment', 'attraction', 'fear', 'jealousy', 'irritation', 'admiration'];
     const LABELS = {
         trust: 'Доверие', affection: 'Симпатия', respect: 'Уважение',
@@ -92,6 +92,88 @@
         };
     }
 
+    // Stable identity key: ignores case, accents, punctuation and repeated whitespace.
+    // Deliberately does not use fuzzy matching, to avoid merging different characters.
+    function entityIdentityKey(value) {
+        return cleanName(value).normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+            .toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    }
+
+    function consolidateDuplicateEntities(state) {
+        const entities = Object.values(state.entities || {});
+        const remap = new Map();
+        const canonical = new Map();
+        for (const entity of entities) {
+            if (!entity?.id || !entity?.name) continue;
+            const primaryKey = entityIdentityKey(entity.name);
+            const keys = [entity.name, ...(entity.aliases || [])].map(entityIdentityKey).filter(Boolean);
+            let keeper = canonical.get(primaryKey);
+            const compatibleTypes = keeper && (keeper.type === entity.type || (['npc', 'main_character'].includes(keeper.type) && ['npc', 'main_character'].includes(entity.type)));
+            if (keeper && !compatibleTypes) keeper = null;
+            if (!keeper) {
+                canonical.set(primaryKey, entity);
+                for (const key of keys.slice(1)) if (!canonical.has(key)) canonical.set(key, entity);
+                continue;
+            }
+            remap.set(entity.id, keeper.id);
+            keeper.aliases ??= [];
+            for (const alias of [entity.name, ...(entity.aliases || [])]) {
+                const key = entityIdentityKey(alias);
+                if (key && key !== entityIdentityKey(keeper.name) && !keeper.aliases.some(a => entityIdentityKey(a) === key)) keeper.aliases.push(alias);
+            }
+            keeper.aliases = keeper.aliases.slice(0, 30);
+            if (entity.firstSeenAt && (!keeper.firstSeenAt || entity.firstSeenAt < keeper.firstSeenAt)) keeper.firstSeenAt = entity.firstSeenAt;
+            if (entity.lastSeenAt && (!keeper.lastSeenAt || entity.lastSeenAt > keeper.lastSeenAt)) keeper.lastSeenAt = entity.lastSeenAt;
+            delete state.entities[entity.id];
+            canonical.set(primaryKey, keeper);
+            for (const key of keys.slice(1)) if (!canonical.has(key)) canonical.set(key, keeper);
+        }
+        if (!remap.size) return;
+
+        // Re-key directed relationships and merge duplicate edges without adding scores.
+        const mergedRelations = {};
+        for (const rel of Object.values(state.relationships || {})) {
+            rel.sourceId = remap.get(rel.sourceId) || rel.sourceId;
+            rel.targetId = remap.get(rel.targetId) || rel.targetId;
+            if (rel.sourceId === rel.targetId) continue;
+            const key = `${rel.sourceId}__to__${rel.targetId}`;
+            if (!mergedRelations[key]) mergedRelations[key] = rel;
+            else {
+                const current = mergedRelations[key];
+                for (const metric of METRICS) current.scores[metric] = Math.max(Number(current.scores?.[metric] ?? 100), Number(rel.scores?.[metric] ?? 100));
+                if (String(rel.updatedAt || '') > String(current.updatedAt || '')) {
+                    current.updatedAt = rel.updatedAt;
+                    current.status = rel.status || current.status;
+                    current.statusDescription = rel.statusDescription || current.statusDescription;
+                }
+            }
+        }
+        state.relationships = mergedRelations;
+
+        // Preserve inventory quantities when duplicate owners are consolidated.
+        const inv = state.inventory;
+        if (inv?.items) {
+            for (const [oldId, newId] of remap) {
+                const oldRow = inv.items[oldId];
+                if (!oldRow) continue;
+                const newRow = inv.items[newId] ??= { ownerId: newId, ownerName: state.entities[newId]?.name || oldRow.ownerName, items: [] };
+                for (const item of oldRow.items || []) {
+                    const found = newRow.items.find(x => entityIdentityKey(x.name) === entityIdentityKey(item.name));
+                    if (found) found.quantity = (Number(found.quantity) || 0) + (Number(item.quantity) || 0);
+                    else newRow.items.push({ name: item.name, quantity: Number(item.quantity) || 0 });
+                }
+                delete inv.items[oldId];
+            }
+        }
+        for (const entry of state.journal || []) {
+            entry.sourceId = remap.get(entry.sourceId) || entry.sourceId;
+            entry.targetId = remap.get(entry.targetId) || entry.targetId;
+        }
+        if (inv?.journal) for (const entry of inv.journal) {
+            entry.ownerId = remap.get(entry.ownerId) || entry.ownerId;
+        }
+    }
+
     function migrateState(state) {
         if (!state || typeof state !== 'object') return freshState();
         state.entities ??= {};
@@ -112,6 +194,7 @@
         state.inventory.items ??= {};
         state.inventory.journal ??= [];
         state.inventory.processedMessages ??= [];
+        consolidateDuplicateEntities(state);
 
         if (!state.schemaVersion || state.schemaVersion < 3) {
             for (const rel of Object.values(state.relationships)) {
@@ -222,7 +305,9 @@
 
     function ensureEntity(state, name, type = 'npc', aliases = []) {
         const clean = cleanName(name);
-        const id = idFor(clean);
+        if (!clean) return null;
+        const matched = findEntity(state, clean);
+        const id = matched?.id || idFor(clean);
         if (!id) return null;
         const now = new Date().toISOString();
         state.entities[id] ??= {
@@ -243,10 +328,10 @@
     }
 
     function findEntity(state, name) {
-        const n = norm(name);
+        const n = entityIdentityKey(name);
         if (!n) return null;
         return Object.values(state.entities).find(e =>
-            norm(e.name) === n || (e.aliases || []).some(a => norm(a) === n)
+            entityIdentityKey(e.name) === n || (e.aliases || []).some(a => entityIdentityKey(a) === n)
         ) || null;
     }
 
@@ -1396,12 +1481,16 @@ ${body}
             for (const r of rels.slice(0, 50)) {
                 const card = document.createElement('section');
                 card.className = 'dr-relation';
+                const header = document.createElement('div');
+                header.className = 'dr-relation-header';
                 const heading = document.createElement('strong');
+                heading.className = 'dr-relation-title';
                 heading.textContent = `${state.entities[r.sourceId]?.name || r.sourceId} → ${state.entities[r.targetId]?.name || r.targetId}`;
                 const status = document.createElement('span');
                 status.className = 'dr-status';
                 status.textContent = r.statusDescription || r.status;
-                card.append(heading, status);
+                header.append(heading, status);
+                card.append(header);
                 for (const metric of METRICS) {
                     const row = document.createElement('div');
                     row.className = 'dr-metric';
